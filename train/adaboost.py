@@ -122,80 +122,52 @@ def _find_best_threshold_for_feature(
     weights: np.ndarray,
 ) -> Tuple[float, int, float]:
     """
-    对单个特征，通过一次排序 + 单次线性扫描找到最优阈值和极性。
-
-    论文 Section 3.1 算法描述：
-        "For each feature, the examples are sorted based on feature value.
-         The AdaBoost optimal threshold for that feature can then be computed
-         in a single pass over this sorted list. For each element in the sorted
-         list, four sums are maintained and evaluated:
-             T+ : 所有正样本权重之和
-             T- : 所有负样本权重之和
-             S+ : 当前元素以下正样本权重之和
-             S- : 当前元素以下负样本权重之和
-         误差计算：
-             e = min(S+ + (T- - S-), S- + (T+ - S+))"
-
-    参数：
-        feature_values : ndarray, shape (n_samples,)  — 单个特征的值
-        labels         : ndarray, shape (n_samples,)  — 0/1 标签
-        weights        : ndarray, shape (n_samples,)  — 已归一化的样本权重
-
-    返回：
-        (threshold, polarity, min_error) 三元组
+    【向量化加速版】对单个特征找到最优阈值和极性。
+    数学逻辑与论文完全一致，利用 np.cumsum 消除 9000 次的 Python 慢速 for 循环。
     """
     n = len(feature_values)
 
-    # 按特征值排序，得到排序索引
+    # 1. 按特征值排序
     sorted_indices = np.argsort(feature_values)
     sorted_vals   = feature_values[sorted_indices]
     sorted_labels = labels[sorted_indices]
     sorted_weights = weights[sorted_indices]
 
-    # T+ / T-：全体正/负样本权重之和
-    T_pos = weights[labels == 1].sum()
-    T_neg = weights[labels == 0].sum()
+    # 2. 分离正负样本的权重矩阵
+    w_pos = sorted_weights * (sorted_labels == 1)
+    w_neg = sorted_weights * (sorted_labels == 0)
 
-    # S+ / S-：扫描到当前位置时，以下正/负样本权重累积和
-    S_pos = 0.0
-    S_neg = 0.0
+    # 3. 核心加速：使用 np.cumsum 一次性求出所有位置的累加和 (替代原先的 for 循环)
+    # S_pos/S_neg 数组的第 i 个元素，即为原代码循环到第 i 次时的 S_pos/S_neg 值
+    S_pos_arr = np.cumsum(w_pos)
+    S_neg_arr = np.cumsum(w_neg)
 
-    min_error = np.inf
-    best_threshold = 0.0
-    best_polarity = 1
+    # 全局正负权重之和
+    T_pos = S_pos_arr[-1]
+    T_neg = S_neg_arr[-1]
 
-    for i in range(n):
-        # 当前元素的标签和权重
-        if sorted_labels[i] == 1:
-            S_pos += sorted_weights[i]
-        else:
-            S_neg += sorted_weights[i]
+    # 4. 向量化计算所有可能分割点的两种误差
+    # e1: 阈值以下标为负 (p = -1) 的误差
+    e1_arr = S_pos_arr + (T_neg - S_neg_arr)
+    # e2: 阈值以下标为正 (p = +1) 的误差
+    e2_arr = S_neg_arr + (T_pos - S_pos_arr)
 
-        # 误差一：将 ≤ 当前值的样本标为负例（p = +1，即 f(x) < θ → 正例）
-        #         → 当前值以下正例全部判错，以上负例全部判错
-        e1 = S_pos + (T_neg - S_neg)
+    # 5. 找出每个位置的最小误差
+    errors = np.minimum(e1_arr, e2_arr)
 
-        # 误差二：将 ≤ 当前值的样本标为正例（p = -1，即 -f(x) < -θ → 正例）
-        #         → 当前值以下负例全部判错，以上正例全部判错
-        e2 = S_neg + (T_pos - S_pos)
+    # 6. 找到全局最小误差的索引
+    best_idx = np.argmin(errors)
+    
+    min_error = float(errors[best_idx])
+    best_polarity = -1 if e1_arr[best_idx] < e2_arr[best_idx] else 1
 
-        # 论文：e = min(S+ + (T- - S-), S- + (T+ - S+))
-        # 选项A（e1）：阈值以下标为负，以上标为正 → p = -1（h=1 if -f < -θ → f > θ）
-        # 选项B（e2）：阈值以下标为正，以上标为负 → p = +1（h=1 if  f <  θ）
-        error = min(e1, e2)
-        polarity = -1 if e1 < e2 else 1
+    # 7. 计算阈值（原逻辑：当前值与下一值的中点）
+    if best_idx + 1 < n:
+        best_threshold = 0.5 * (sorted_vals[best_idx] + sorted_vals[best_idx + 1])
+    else:
+        best_threshold = sorted_vals[best_idx] + 0.5
 
-        if error < min_error:
-            min_error = error
-            best_polarity = polarity
-            # 阈值设为当前值与下一值的中点（若到达末尾则取当前值 + 0.5）
-            if i + 1 < n:
-                best_threshold = 0.5 * (sorted_vals[i] + sorted_vals[i + 1])
-            else:
-                best_threshold = sorted_vals[i] + 0.5
-
-    return best_threshold, best_polarity, min_error
-
+    return float(best_threshold), int(best_polarity), min_error
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 核心函数：AdaBoost 训练（论文 Table 1）

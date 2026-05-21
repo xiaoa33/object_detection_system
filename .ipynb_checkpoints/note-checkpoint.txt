@@ -1,0 +1,16 @@
+1.uv run train/data_loader.py
+2.运行测试 
+uv run train/test.py --modules data_loader
+uv run train/test.py --modules integral_image
+uv run train/test.py --modules haar_features
+uv run train/adaboost.py
+uv run train/test.py --modules adaboost
+3.现有结构说明
+3.1 在与train同级的文件夹下新建一个data文件夹，放train、test、val三个文件夹
+3.2 data_loader.py：数据准备与加载，可以在train_cascade.py中调用
+from data_loader import load_train_data, load_val_data, load_test_data
+X_pos, X_neg = load_train_data()
+3.3 integral_image.py：构建积分图，在harr特征计算和推理时归一化计算方差时可以用到（window_variance）
+3.4 harr_features：枚举harr特征，用于adaboost.py选择最优特征
+3.5 adaboost.py：构建单个强分类器，用于cascade_trainer.py
+3.6 test.py：测试已有函数的功能

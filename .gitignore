@@ -1,4 +1,15 @@
 /.venv
 /data
 __pycache__
-data.rar
+
+# 忽略数据集文件夹
+data/
+datasets/
+
+# 忽略模型和缓存
+models/
+*.npz
+*.pkl
+
+# 忽略 Python 缓存
+__pycache__/

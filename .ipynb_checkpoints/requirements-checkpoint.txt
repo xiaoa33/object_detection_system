@@ -1,0 +1,6 @@
+colorama==0.4.6
+numpy
+opencv-python==4.13.0.92
+tqdm==4.67.3
+# 图像读取回退库（处理某些 OpenCV 无法读取的特殊 GIF 测试图）
+Pillow>=9.0.0
