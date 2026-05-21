@@ -73,7 +73,7 @@ class CascadeClassifier:
             
         # 计算标准差，用于对特征值进行归一化
         sigma = np.sqrt(variance)
-
+        
         # 依次通过级联的每一层
         for stage_idx, stage in enumerate(self.stages):
             stage_score = 0.0
@@ -89,8 +89,9 @@ class CascadeClassifier:
                     win_c=win_c
                 )
                 
-                # 2. 动态方差归一化（等价于训练时预先对图像做方差归一化）
-                norm_feat_val = raw_feat_val / sigma
+                # 【关键修正】除以 scale 的平方，将特征值还原到 24x24 的标准尺度量级
+                normalized_scale_feat = raw_feat_val / (scale * scale)
+                norm_feat_val = normalized_scale_feat / sigma
                 
                 # 3. 弱分类器判定：h(x) = 1 if p*f(x) < p*theta else 0
                 if wc.polarity * norm_feat_val < wc.polarity * wc.threshold:

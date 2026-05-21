@@ -2,33 +2,7 @@ import cv2
 import os
 from detect.detector import Detector
 from detect.cascade_classifier import CascadeClassifier
-
-# 1. 在 test.py 中定义这个函数
-def non_max_suppression(rects, overlapThresh=0.3):
-    if len(rects) == 0:
-        return []
-    boxes = np.array([[x, y, x + w, y + h] for (x, y, w, h) in rects], dtype=float)
-    pick = []
-    x1, y1, x2, y2 = boxes[:, 0], boxes[:, 1], boxes[:, 2], boxes[:, 3]
-    area = (x2 - x1 + 1) * (y2 - y1 + 1)
-    idxs = np.argsort(y2) # 如果有置信度，按置信度排序更好
-
-    while len(idxs) > 0:
-        last = len(idxs) - 1
-        i = idxs[last]
-        pick.append(i)
-        xx1 = np.maximum(x1[i], x1[idxs[:last]])
-        yy1 = np.maximum(y1[i], y1[idxs[:last]])
-        xx2 = np.minimum(x2[i], x2[idxs[:last]])
-        yy2 = np.minimum(y2[i], y2[idxs[:last]])
-        w = np.maximum(0, xx2 - xx1 + 1)
-        h = np.maximum(0, yy2 - yy1 + 1)
-        overlap = (w * h) / area[idxs[:last]]
-        idxs = np.delete(idxs, np.concatenate(([last], np.where(overlap > overlapThresh)[0])))
-    return [rects[i] for i in pick]
-
-# 2. 在检测循环之后使用它
-# 原本的代码可能是：for r in rects: draw_rect(r)
+import numpy as np
 
     
 def test_single_image(image_path, model_path):
@@ -52,9 +26,13 @@ def test_single_image(image_path, model_path):
     print(f"[Test] 成功读取图片，尺寸: {img.shape}")
     
     # 5. 执行检测
+        # 5. 执行检测 (这里可以手动传入 NMS 参数进行调优)
     print("[Test] 开始检测...")
-    candidates = detector.detect(img)
-    candidates = non_max_suppression(candidates, overlapThresh=0.3)
+    
+    # min_votes 越大，过滤越严格（图1的背景框就会消失）
+    # iou_threshold 越小，合并越积极（图2的重叠框就会变成一个大框）
+    candidates = detector.detect(img, iou_threshold=0.2, min_votes=5)
+    
     
     # 6. 输出结果
     print(f"[Test] 检测完成！共找到 {len(candidates)} 个候选框。")

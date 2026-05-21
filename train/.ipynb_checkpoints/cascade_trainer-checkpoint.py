@@ -9,9 +9,10 @@ import time
 import pickle
 import numpy as np
 from typing import List
-
+import cv2
+from train.integral_image import build
 from train.adaboost import train_adaboost, adjust_threshold_for_detection_rate, StrongClassifier
-from train.haar_features import compute_all_features
+from train.haar_features import compute_all_features, compute_feature_at_scale
 
 class CascadeTrainer:
     def __init__(self, 
@@ -21,14 +22,19 @@ class CascadeTrainer:
                  target_fpr=1e-5,
                  layer_max_fpr=0.50,
                  layer_min_dr=0.995,
-                 checkpoint_path="../models/cascade_checkpoint.pkl", # [新增] 检查点保存路径
-                 resume_state=None                                   # [新增] 恢复的断点状态字典
+                 checkpoint_path="../models/cascade_checkpoint.pkl",
+                 resume_state=None,
+                 features_desc=None,              # 【新增】用于 HNM 提取新特征的全局描述符
+                 background_dir="../data/background"  # 【新增】背景图像文件夹
     ):
         # 数据集引用
         self.X_pos = X_pos_train
         self.y_pos = y_pos_train
         self.X_val = X_val
         self.y_val = y_val
+        
+        self.features_desc = features_desc
+        self.background_dir = background_dir
 
         # 超参数
         self.F_target = target_fpr
@@ -36,13 +42,11 @@ class CascadeTrainer:
         self.d_target = layer_min_dr
         self.checkpoint_path = checkpoint_path
         
-        # [新增] 断点续训初始化逻辑
         if resume_state is not None:
             print(f"[Checkpoint] 检测到断点状态，正在恢复...")
             self.stages = resume_state['stages']
             self.start_layer_idx = resume_state['layer_idx']
             self.overall_fpr = resume_state['overall_fpr']
-            # 恢复经过 HNM 筛选后的负样本
             self.X_neg = resume_state['X_neg']
             self.y_neg = np.zeros(len(self.X_neg), dtype=np.int32)
             print(f"  -> 恢复完成！将从第 {self.start_layer_idx + 1} 层继续训练。当前整体 FPR: {self.overall_fpr:.2e}")
@@ -66,7 +70,6 @@ class CascadeTrainer:
         fpr = fp / np.sum(val_neg_mask) if np.sum(val_neg_mask) > 0 else 0
         return tpr, fpr
 
-    # [新增] 状态保存函数
     def _save_checkpoint(self, layer_idx: int, overall_fpr: float):
         """将当前训练进度序列化到磁盘"""
         os.makedirs(os.path.dirname(self.checkpoint_path), exist_ok=True)
@@ -74,24 +77,20 @@ class CascadeTrainer:
             'stages': self.stages,
             'layer_idx': layer_idx,
             'overall_fpr': overall_fpr,
-            'X_neg': self.X_neg  # 必须保存当前的负样本，避免重新 HNM
+            'X_neg': self.X_neg
         }
         with open(self.checkpoint_path, 'wb') as f:
             pickle.dump(state, f)
         print(f"[Checkpoint] 第 {layer_idx} 层训练进度已保存至: {self.checkpoint_path}")
 
     def train(self) -> List[StrongClassifier]:
-        """执行论文 Table 2 的层级级联训练循环。"""
-        # [修改] 使用断点中的初始状态
+        """执行级联训练循环。"""
         overall_fpr = self.overall_fpr  
         layer_idx = self.start_layer_idx
         
-        # [新增] 动态初始化特征数量
         if self.stages:
-            # 如果是断点续训，读取最后一层成功的特征数，下一层从这个数字加 2 开始
             n_features = len(self.stages[-1].weak_classifiers) + 2
         else:
-            # 如果是全新训练，第一层从 2 个特征开始尝试
             n_features = 2
 
         print(f"\n{'='*60}")
@@ -104,7 +103,6 @@ class CascadeTrainer:
             layer_idx += 1
             print(f"\n[Cascade] >>> 开始训练第 {layer_idx} 层 <<<")
     
-            # [删除] 移除了原先写死的 n_features = 2 + (layer_idx - 1) * 3 逻辑
             current_stage_fpr = 1.0
             best_stage_model = None
             
@@ -135,8 +133,6 @@ class CascadeTrainer:
             self.stages.append(best_stage_model)
             overall_fpr = overall_fpr * current_stage_fpr
             
-            # [新增] 当这一层训练成功后，为下一层准备初始特征数
-            # 下一层面临更难的负样本，所以初始特征数 = 这一层最终的特征数 + 2
             n_features = len(best_stage_model.weak_classifiers) + 2
 
             print(f"[Cascade] 第 {layer_idx} 层训练成功！本层包含 {len(best_stage_model.weak_classifiers)} 个特征。")
@@ -144,59 +140,152 @@ class CascadeTrainer:
             
             if overall_fpr <= self.F_target:
                 print("\n[Cascade] 达到系统目标 FPR，停止级联训练。")
-                self._save_checkpoint(layer_idx, overall_fpr) # [新增] 结束时也保存一次
+                self._save_checkpoint(layer_idx, overall_fpr)
                 break
                 
-            # 4. Hard Negative Mining
+            # 4. 执行 Hard Negative Mining
             print(f"\n[Cascade] 执行 Hard Negative Mining (HNM)...")
             self.X_neg = self._mine_hard_negatives()
-            self.y_neg = np.zeros(len(self.X_neg), dtype=np.int32) # [新增] 更新负样本标签对齐新长度
+            self.y_neg = np.zeros(len(self.X_neg), dtype=np.int32)
 
-            # [新增] 每一层训练并挖掘完难例后，自动保存检查点
             self._save_checkpoint(layer_idx, overall_fpr)
 
         return self.stages
 
+    def _predict_patch(self, ii: np.ndarray, variance: float) -> bool:
+        """在线预测单个 24x24 局部积分图是否能通过当前所有的级联阶段"""
+        if variance < 1e-4:
+            return False
+        sigma = np.sqrt(variance)
+        
+        # 依次运行目前已训练出的所有 Stage
+        for stage in self.stages:
+            stage_score = 0.0
+            for wc in stage.weak_classifiers:
+                # 兼容弱分类器保存特征索引为整型和对象两种可能
+                feat_desc = self.features_desc[wc.feature_idx] if isinstance(wc.feature_idx, (int, np.integer)) else wc.feature_idx
+                
+                # 扫描的是 24x24 的切片，因此 scale=1.0, 坐标 win_r=0, win_c=0
+                raw_feat_val = compute_feature_at_scale(
+                    desc=feat_desc,
+                    ii=ii,
+                    scale=1.0,
+                    win_r=0,
+                    win_c=0
+                )
+                norm_feat_val = raw_feat_val / sigma
+                if wc.polarity * norm_feat_val < wc.polarity * wc.threshold:
+                    stage_score += wc.alpha
+            if stage_score < stage.threshold:
+                return False
+        return True
+
     def _mine_hard_negatives(self) -> np.ndarray:
         """
-        对应 PDF 4.2 节：Hard Negative Mining
-        使用当前级联模型扫描大量非人脸图，收集被误检的子窗口（难负例）
+        真正的 Hard Negative Mining：
+        扫描 background_dir 下的所有大图，利用滑动窗口判定，收集新的 False Positives。
+        若不具备背景图像源，则自动降级为对现有负样本库进行特征过滤。
         """
-        print("  [HNM] 使用当前级联模型过滤整个负样本池，挖掘难例...")
+        if not self.background_dir or not os.path.exists(self.background_dir):
+            print(f"  [HNM] 警告：背景图文件夹不存在，自动降级为旧版负特征过滤模式...")
+            return self._fallback_filter_negatives()
+
+        
+        bg_files = [os.path.join(self.background_dir, f) for f in os.listdir(self.background_dir)
+                    if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+        
+        if not bg_files:
+            print(f"  [HNM] 警告：在背景文件夹中未检测到图片，自动降级为旧版负特征过滤模式...")
+            return self._fallback_filter_negatives()
+
+        print(f"  [HNM] 正在扫描背景图像。目标搜集数量: 1000 个...")
         start_time = time.time()
         
-        # 将原始全部负样本（比如 15000 个）送入当前级联进行测试
-        # 巧妙利用 numpy 矢量化，避免写 for 循环扫描，提升速度
-        current_hard_neg = self.X_neg
+        target_hnm_count = 1000
+        mined_patches = []
         
-        for stage_idx, stage in enumerate(self.stages):
-            if len(current_hard_neg) == 0:
-                break 
+        # 打乱图片顺序以确保采样的泛化能力
+        np.random.shuffle(bg_files)
+        found_count = 0
+        
+        for file_path in bg_files:
+            if found_count >= target_hnm_count:
+                break
                 
-            # 获取当前阶段的预测结果
+            img = cv2.imread(file_path, cv2.IMREAD_GRAYSCALE)
+            if img is None:
+                continue
+            
+            # 多尺度下采样扫描背景大图
+            h_orig, w_orig = img.shape
+            scales = [1.0, 0.75, 0.5, 0.3]
+            
+            for sc in scales:
+                if found_count >= target_hnm_count:
+                    break
+                
+                nh, nw = int(h_orig * sc), int(w_orig * sc)
+                if nh < 24 or nw < 24:
+                    continue
+                    
+                resized_img = cv2.resize(img, (nw, nh), interpolation=cv2.INTER_AREA)
+                
+                # 滑动步长设为 12 像素，兼顾速度与难例的局部多样性
+                step = 12
+                for r in range(0, nh - 24 + 1, step):
+                    for c in range(0, nw - 24 + 1, step):
+                        if found_count >= target_hnm_count:
+                            break
+                            
+                        patch = resized_img[r:r+24, c:c+24]
+                        
+                        # 1. 忽略大面积无纹理平坦区域
+                        var = np.var(patch)
+                        if var < 10.0:
+                            continue
+                            
+                        # 2. 生成切片对应积分图并做早期级联预测
+                        patch_iimg = build(patch)
+                        if self._predict_patch(patch_iimg.ii, var):
+                            mined_patches.append(patch)
+                            found_count += 1
+
+        print(f"  [HNM] 扫描完成！耗时: {time.time() - start_time:.2f}s | 共计挖出: {len(mined_patches)} / {target_hnm_count}")
+        
+        if len(mined_patches) > 0:
+            # 统一对挖出的 patch 做图像级别的方差归一化（等同 dataloader 规范）
+            normalized_patches = []
+            for p in mined_patches:
+                mean = np.mean(p)
+                std = np.std(p)
+                if std < 1e-4:
+                    std = 1.0
+                normalized_patches.append((p - mean) / std)
+            
+            from train.integral_image import build_batch
+            iimgs_mined = build_batch(normalized_patches)
+            
+            # 批量提取这批新难例在 160,000 特征空间中的新特征矩阵
+            print("  [HNM] 正在对挖出的难例进行 160,000 维特征在线计算...")
+            X_hnm = compute_all_features(iimgs_mined, self.features_desc, scale=1.0).astype(np.float32)
+            return X_hnm
+        else:
+            return self._fallback_filter_negatives()
+
+    def _fallback_filter_negatives(self) -> np.ndarray:
+        """退化/备用策略：过滤当前的负特征空间"""
+        current_hard_neg = self.X_neg
+        for stage in self.stages:
+            if len(current_hard_neg) == 0:
+                break
             preds = stage.classify(current_hard_neg)
-            
-            # 只有被当前阶段预测为 1（误判为人脸）的负样本，才能留到下一阶段
             current_hard_neg = current_hard_neg[preds == 1]
-            
-        hard_neg_arr = current_hard_neg
         
-        print(f"  [HNM] 耗时: {time.time() - start_time:.2f}s | 从负样本池中挖掘出 {len(hard_neg_arr)} 个难负例。")
-        
-        # 【遵循 PDF 第 4.2 节】：每层最多收集 6,000 个
-        MAX_HNM_SAMPLES = 6000
-        if len(hard_neg_arr) > MAX_HNM_SAMPLES:
-            print(f"  [HNM] 难例过多，随机截取 {MAX_HNM_SAMPLES} 个以限制计算量。")
-            indices = np.random.choice(len(hard_neg_arr), MAX_HNM_SAMPLES, replace=False)
-            hard_neg_arr = hard_neg_arr[indices]
-            
-        # 防止负样本枯竭导致 AdaBoost 崩溃（虽然 A 的权重平衡写得很好，但样本绝对数量不能太少）
-        MIN_SAMPLES = 500
-        if len(hard_neg_arr) < MIN_SAMPLES:
-            print(f"  [HNM] 警告：难例过少 ({len(hard_neg_arr)})，级联分类器对当前负样本池已具备极强分辨力！")
-            print(f"  [HNM] 补充历史负样本以维持下一层特征选取的稳定性...")
-            # 随机从全局负样本池里抽一些凑数，防止矩阵计算崩溃
-            fallback_indices = np.random.choice(len(self.X_neg), MIN_SAMPLES - len(hard_neg_arr), replace=False)
-            hard_neg_arr = np.vstack([hard_neg_arr, self.X_neg[fallback_indices]])
-            
-        return hard_neg_arr
+        if len(current_hard_neg) < 200:
+            # 避免训练枯竭，回填一部分历史样本
+            fallback_indices = np.random.choice(len(self.X_neg), min(500 - len(current_hard_neg), len(self.X_neg)), replace=False)
+            if len(current_hard_neg) > 0:
+                current_hard_neg = np.vstack([current_hard_neg, self.X_neg[fallback_indices]])
+            else:
+                current_hard_neg = self.X_neg[fallback_indices]
+        return current_hard_neg
