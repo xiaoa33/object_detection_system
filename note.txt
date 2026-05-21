@@ -14,3 +14,7 @@ X_pos, X_neg = load_train_data()
 3.4 harr_features：枚举harr特征，用于adaboost.py选择最优特征
 3.5 adaboost.py：构建单个强分类器，用于cascade_trainer.py
 3.6 test.py：测试已有函数的功能
+4.调整，重新构造正样本
+uv run train/prepare_positives.py
+5.构造负样本
+uv run train/prepare_negatives.py
