@@ -175,11 +175,6 @@ def main():
         )
         print(f"  -> 验证正样本: {len(imgs_pos_val)} 张")
 
-        # 验证负样本不在此处处理（注释说明原因）
-        # 每轮训练时由 cascade_trainer 的 _sample_val_neg_features() 从大图重新随机采样
-        print(f"\n  [2c 说明] 验证负样本不在此处处理。")
-        print(f"            每轮训练时由 cascade_trainer 从 {args.val_neg_dir} 重新随机采样。")
-
         # ── 2d：批量构建积分图 ────────────────────────────────
         print(f"\n  [2d] 批量构建积分图...")
         print(f"    训练正样本（{len(imgs_pos_tr)} 张）...")
@@ -243,7 +238,7 @@ def main():
     print(f"  单层最低 DR     : {args.layer_min_dr}")
     print(f"  目标整体 FPR    : {args.target_fpr:.2e}")
     print(f"  单层特征上限    : {args.max_features_per_stage}")
-    print(f"  每轮验证负样本  : {args.val_neg_per_round} 个（每轮重采样）")
+    print(f"  每轮验证负样本  : {args.val_neg_per_round} 个")
     print(f"  HNM 步长        : {args.hnm_step}")
     print(f"  训练负样本大图  : {args.train_neg_dir}")
     print(f"  验证负样本大图  : {args.val_neg_dir}")
