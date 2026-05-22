@@ -26,8 +26,8 @@ def parse_args():
     parser.add_argument("--force_recompute", action="store_true", help="强制重新计算特征矩阵(忽略缓存)")
     parser.add_argument("--restart", action="store_true", help="强制从第0层重新训练(忽略断点)")
     
-    # 【新增】背景图目录参数，指向 data/background 目录
-    parser.add_argument("--background_dir", type=str, default="../data/background", help="用于 Hard Negative Mining 的背景大图目录")
+    # 结合目录结构，将背景图目录默认指向 data/train/negative 目录
+    parser.add_argument("--background_dir", type=str, default="../data/train/negative", help="用于 Hard Negative Mining 的背景图目录")
     
     return parser.parse_args()
 
@@ -40,7 +40,7 @@ def main():
     features_desc = enumerate_features(win_size=24)
 
     if os.path.exists(args.features_cache) and not args.force_recompute:
-        print(f"\n[Pipeline] 3 & 4. 发现特征缓存文件，极速加载中: {args.features_cache}")
+        print(f"\n[Pipeline] 3 & 4. 发现特征缓存文件，加载中: {args.features_cache}")
         cache = np.load(args.features_cache)
         X_pos_tr = cache['X_pos_tr'].astype(np.float32)
         y_pos_tr = cache['y_pos_tr'].astype(np.int8)
@@ -63,7 +63,9 @@ def main():
             imgs_pos_tr = np.concatenate((imgs_pos_tr, imgs_pos_tr_flipped), axis=0)
         print(f"  -> 正样本数量扩充至: {len(imgs_pos_tr)}")
 
-        imgs_pos_val, imgs_neg_val = load_val_data(max_pos=100, max_neg=200)
+        # 【修复问题 4】扩大验证集规模至 500 正 / 2000 负
+        print("  -> 加载验证集图像...")
+        imgs_pos_val, imgs_neg_val = load_val_data(max_pos=500, max_neg=2000)
 
         print("\n[Pipeline] 3. 构建积分图...")
         iimgs_pos_tr = build_batch(imgs_pos_tr)
@@ -71,7 +73,7 @@ def main():
         iimgs_pos_val = build_batch(imgs_pos_val)
         iimgs_neg_val = build_batch(imgs_neg_val)
 
-        print("\n[Pipeline] 4. 批量计算特征矩阵 (极为耗时)...")
+        print("\n[Pipeline] 4. 批量计算特征矩阵...")
         X_pos_tr = compute_all_features(iimgs_pos_tr, features_desc, scale=1.0).astype(np.float32)
         X_neg_tr = compute_all_features(iimgs_neg_tr, features_desc, scale=1.0).astype(np.float32)
         y_pos_tr = np.ones(len(X_pos_tr), dtype=np.int8)
@@ -102,12 +104,12 @@ def main():
         X_neg_train=X_neg_tr, y_neg_train=y_neg_tr,
         X_val=X_val, y_val=y_val,
         target_fpr=args.target_fpr,
-        layer_max_fpr=0.50,  
-        layer_min_dr=0.995,
+        layer_max_fpr=args.layer_max_fpr if hasattr(args, 'layer_max_fpr') else 0.50,  
+        layer_min_dr=args.layer_min_dr if hasattr(args, 'layer_min_dr') else 0.995,
         checkpoint_path=args.checkpoint,
         resume_state=resume_state,
-        features_desc=features_desc,              # 【新增】传入全部 Haar 特征描述子以在 HNM 时实时计算
-        background_dir=args.background_dir        # 【新增】背景图目录路径
+        features_desc=features_desc,              
+        background_dir=args.background_dir        
     )
     
     stages = trainer.train()
@@ -122,7 +124,7 @@ def main():
     with open(args.model_out, "wb") as f:
         pickle.dump(stages, f)
         
-    print(f"[Pipeline] 训练流水线圆满结束！模型已保存至: {args.model_out}")
+    print(f"[Pipeline] 训练完成！模型已保存至: {args.model_out}")
 
 if __name__ == "__main__":
     main()
