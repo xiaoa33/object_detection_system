@@ -94,7 +94,7 @@ from collections import namedtuple
 from typing import List
 
 # integral_image 模块提供底层积分图查询，保持松耦合（仅依赖 rect_sum 函数）
-from train.integral_image import rect_sum, IntegralImage
+from integral_image import rect_sum, IntegralImage
 
 
 # ─────────────────────────────────────────────────────────────

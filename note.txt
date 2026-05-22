@@ -18,3 +18,5 @@ X_pos, X_neg = load_train_data()
 uv run train/prepare_positives.py
 5.构造负样本
 uv run train/prepare_negatives.py
+6.验证训练流程
+uv run train/train_cascade.py
