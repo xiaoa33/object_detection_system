@@ -97,11 +97,18 @@ class CascadeClassifier:
                 )
                 
                 # 【关键修正】除以 scale 的平方，将特征值还原到 24x24 的标准尺度量级
+                # ⚠ 注意：不再除以 sigma（方差归一化）！
+                # 原因：训练时 data_loader 已经对每个 24x24 patch 做了方差归一化
+                # （patch - mean）/ std，然后在归一化后的 patch 上构建积分图并计算特征值。
+                # 所以训练时的特征值已经包含了方差归一化的影响。
+                # 推理时如果在原始积分图上算特征再除以 sigma，相当于做了双重归一化，
+                # 导致特征值量级缩小到 ±1，远小于弱分类器阈值（如 -120），
+                # 所有弱分类器条件都不满足，检测结果为 0。
+                # 正确的做法：只做尺度归一化（除以 scale²），不做方差归一化。
                 normalized_scale_feat = raw_feat_val / (scale * scale)
-                norm_feat_val = normalized_scale_feat / sigma
                 
                 # 3. 弱分类器判定：h(x) = 1 if p*f(x) < p*theta else 0
-                if wc.polarity * norm_feat_val < wc.polarity * wc.threshold:
+                if wc.polarity * normalized_scale_feat < wc.polarity * wc.threshold:
                     stage_score += wc.alpha
             
             # 4. 强分类器判定：如果当前层得分低于阈值，触发早期拒绝 (Early Rejection)
