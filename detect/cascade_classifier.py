@@ -22,7 +22,14 @@ import pickle
 from typing import List
 import numpy as np
 import sys
-sys.path.append("D:\cv\大作业\object_detection_system\train")  # 确保能导入训练模块
+import os
+
+# ─── 动态添加项目根目录到 Python 路径 ───
+# 这样无论从哪个目录运行，都能正确导入 train 模块
+_project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
 # 导入成员 A 编写的数据结构和函数
 from train.adaboost import StrongClassifier
 from train.haar_features import compute_feature_at_scale
