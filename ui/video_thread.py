@@ -201,22 +201,16 @@ class VideoThread(QThread):
             face_boxes = []
             if self._detect_enabled:
                 # 更新检测器参数（与 UI 同步）
-                # 注意：Detector 的 min_face_size 是构造函数参数，没有 setter
-                # 这里直接修改属性（Python 允许直接修改实例属性）
                 self.detector.min_face_size = self._min_face_size
 
-                # 调用检测器（传入 NMS 参数）
-                raw_boxes = self.detector.detect(
+                # 调用检测器（内部已包含 NMS 后处理）
+                # 注意：detect() 方法内部已经调用了 nms()，
+                # 这里不需要再重复调用，避免过度过滤
+                face_boxes = self.detector.detect(
                     frame,
                     iou_threshold=self._nms_threshold,
-                    min_votes=3
+                    min_votes=2  # 占位模式用 min_votes=2，更宽松
                 )
-
-                # 执行 NMS 合并重复框（二次过滤，更严格）
-                if raw_boxes:
-                    face_boxes = nms(raw_boxes, iou_threshold=self._nms_threshold)
-                else:
-                    face_boxes = []
 
             # 步骤 c：在帧上绘制检测框和 FPS
             display_frame = self._draw_detection(frame, face_boxes)

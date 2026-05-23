@@ -173,10 +173,13 @@ class Detector:
         #   minNeighbors: 每个候选框需要保留的最小邻近框数量（值越大，误检越少）
         #   minSize     : 最小检测窗口大小
         #   maxSize     : 最大检测窗口大小
+        # 占位模式使用更宽松的参数，确保能检测到人脸
+        # minNeighbors=1 表示每个候选框只需 1 个邻近框即可保留，
+        # 这样检测率更高（虽然可能多一些误检，但 NMS 会过滤）
         boxes = self._placeholder_cascade.detectMultiScale(
             image=gray,
             scaleFactor=self.scale_factor,
-            minNeighbors=3,          # 适当的值，平衡检测率和误检率
+            minNeighbors=1,          # 宽松值，提高检测率（NMS 会过滤重复框）
             minSize=(self.min_face_size, self.min_face_size),
             maxSize=(self.max_face_size, self.max_face_size),
             flags=cv2.CASCADE_SCALE_IMAGE
@@ -188,7 +191,10 @@ class Detector:
             candidates = [(int(x), int(y), int(w), int(h)) for (x, y, w, h) in boxes]
 
         # ─── NMS 后处理 ───
-        return nms(candidates, iou_threshold=iou_threshold, min_votes=min_votes)
+        # 占位模式：OpenCV 的 detectMultiScale 已经做了内部 NMS，
+        # 返回的框数量通常很少（1~3个），不需要投票过滤。
+        # 使用 min_votes=1 只做合并（取重叠框的平均值），不做投票过滤。
+        return nms(candidates, iou_threshold=iou_threshold, min_votes=1)
 
     def _detect_real(self, gray: np.ndarray,
                      iou_threshold: float = 0.3,
