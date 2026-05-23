@@ -432,6 +432,35 @@ class MainWindow(QMainWindow):
             QWidget {{
                 background-color: transparent;
             }}
+            QMessageBox {{
+                background-color: #1a1a1a;
+                color: {TEXT_PRIMARY};
+                font-size: 13px;
+                border: 1px solid #333333;
+                border-radius: 12px;
+            }}
+            QMessageBox QLabel {{
+                color: {TEXT_PRIMARY};
+                font-size: 13px;
+                padding: 10px;
+            }}
+            QMessageBox QPushButton {{
+                background-color: #2a2a2a;
+                color: {TEXT_PRIMARY};
+                font-size: 12px;
+                font-weight: 600;
+                border: 1px solid #444444;
+                border-radius: 8px;
+                padding: 8px 24px;
+                min-width: 80px;
+            }}
+            QMessageBox QPushButton:hover {{
+                background-color: #3a3a3a;
+                border: 1px solid {INS_PINK};
+            }}
+            QMessageBox QPushButton:pressed {{
+                background-color: #1a1a1a;
+            }}
         """)
 
     # ═══════════════════════════════════════════════════════
