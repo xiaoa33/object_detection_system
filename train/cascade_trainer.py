@@ -33,9 +33,9 @@ import numpy as np
 from typing import List, Tuple
 import cv2
 
-from integral_image import build, build_batch
-from adaboost import train_adaboost, StrongClassifier
-from haar_features import compute_all_features, compute_feature_at_scale
+from train.integral_image import build, build_batch
+from train.adaboost import train_adaboost, StrongClassifier
+from train.haar_features import compute_all_features, compute_feature_at_scale
 
 
 # ─────────────────────────────────────────────────────────────

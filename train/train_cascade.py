@@ -43,10 +43,10 @@ import argparse
 import pickle
 import numpy as np
 
-from prepare_positives import load_positive_data   # 返回已处理好的正样本数组列表
-from integral_image import build_batch
-from haar_features import enumerate_features, compute_all_features
-from cascade_trainer import (
+from train.prepare_positives import load_positive_data   # 返回已处理好的正样本数组列表
+from train.integral_image import build_batch
+from train.haar_features import enumerate_features, compute_all_features
+from train.cascade_trainer import (
     CascadeTrainer,
     _collect_patches_from_dir,
     _patches_to_feature_matrix,
