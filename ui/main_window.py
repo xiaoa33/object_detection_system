@@ -61,27 +61,27 @@ from detect.detector import Detector
 
 
 # ═══════════════════════════════════════════════════════════
-# Ins 风格颜色常量
+# 清新风格颜色常量
 # ═══════════════════════════════════════════════════════════
-# 主色调：粉紫渐变（Instagram 标志性配色）
-INS_PINK = "#ff6b6b"       # 霓虹粉
-INS_PURPLE = "#6b5bff"     # 霓虹紫
-INS_ORANGE = "#ffa94d"     # 暖橙
-INS_CYAN = "#4ecdc4"       # 青绿
+# 主色调：薄荷绿 + 天蓝（清新自然）
+CLR_PRIMARY = "#2ecc71"      # 薄荷绿
+CLR_SECONDARY = "#3498db"    # 天蓝
+CLR_ACCENT = "#1abc9c"       # 青绿
+CLR_WARM = "#f39c12"         # 暖橙（点缀）
 
 # 背景色
-BG_DARK = "#0a0a0a"        # 纯黑背景
-BG_CARD = "#1a1a1a"        # 卡片背景
-BG_INPUT = "#2a2a2a"       # 输入区域背景
+BG_MAIN = "#f0f4f8"         # 浅灰蓝主背景
+BG_CARD = "#ffffff"          # 纯白卡片
+BG_INPUT = "#f7f9fc"         # 浅灰输入区域
 
 # 文字色
-TEXT_PRIMARY = "#ffffff"    # 主文字（白色）
-TEXT_SECONDARY = "#888888"  # 次要文字（灰色）
-TEXT_ACCENT = "#ff6b6b"    # 强调文字（粉色）
+TEXT_PRIMARY = "#2c3e50"     # 深蓝灰主文字
+TEXT_SECONDARY = "#7f8c8d"   # 灰绿次要文字
+TEXT_ACCENT = "#2ecc71"      # 薄荷绿强调
 
 # 状态色
-STATUS_GREEN = "#4ecdc4"   # 检测中（青绿）
-STATUS_RED = "#ff6b6b"     # 停止（粉色）
+STATUS_ON = "#2ecc71"        # 检测中（薄荷绿）
+STATUS_OFF = "#e74c3c"       # 停止（柔和红）
 
 
 class MainWindow(QMainWindow):
@@ -126,12 +126,12 @@ class MainWindow(QMainWindow):
         # ═══════════════════════════════════════════════════
         video_card = QFrame()
         video_card.setObjectName("videoCard")
-        video_card.setStyleSheet("""
-            QFrame#videoCard {
-                background-color: #111111;
-                border: 1px solid #2a2a2a;
+        video_card.setStyleSheet(f"""
+            QFrame#videoCard {{
+                background-color: {BG_CARD};
+                border: 1px solid #e0e6ed;
                 border-radius: 16px;
-            }
+            }}
         """)
         video_layout = QVBoxLayout(video_card)
         video_layout.setContentsMargins(12, 12, 12, 12)
@@ -141,15 +141,15 @@ class MainWindow(QMainWindow):
         self.video_label.setMinimumSize(640, 480)
         self.video_label.setAlignment(Qt.AlignCenter)
         self.video_label.setText("◉ 等待摄像头启动...")
-        self.video_label.setStyleSheet("""
-            QLabel {
-                background-color: #0a0a0a;
+        self.video_label.setStyleSheet(f"""
+            QLabel {{
+                background-color: #1a1a2e;
                 border: none;
                 border-radius: 12px;
-                color: #444444;
+                color: #8899aa;
                 font-size: 14px;
                 font-weight: 300;
-            }
+            }}
         """)
         video_layout.addWidget(self.video_label)
 
@@ -160,12 +160,12 @@ class MainWindow(QMainWindow):
         # ═══════════════════════════════════════════════════
         control_card = QFrame()
         control_card.setObjectName("controlCard")
-        control_card.setStyleSheet("""
-            QFrame#controlCard {
-                background-color: #111111;
-                border: 1px solid #2a2a2a;
+        control_card.setStyleSheet(f"""
+            QFrame#controlCard {{
+                background-color: {BG_CARD};
+                border: 1px solid #e0e6ed;
                 border-radius: 16px;
-            }
+            }}
         """)
         control_layout = QVBoxLayout(control_card)
         control_layout.setContentsMargins(20, 24, 20, 24)
@@ -239,11 +239,11 @@ class MainWindow(QMainWindow):
                     font-size: 12px;
                     font-weight: 500;
                     padding: 10px 14px;
-                    border: 1px solid #333333;
+                    border: 1px solid #d0d7de;
                     border-radius: 10px;
                 }}
                 QComboBox:hover {{
-                    border: 1px solid {INS_PINK};
+                    border: 1px solid {CLR_PRIMARY};
                 }}
                 QComboBox::drop-down {{
                     border: none;
@@ -254,12 +254,12 @@ class MainWindow(QMainWindow):
                     border: none;
                 }}
                 QComboBox QAbstractItemView {{
-                    background-color: #1a1a1a;
+                    background-color: {BG_CARD};
                     color: {TEXT_PRIMARY};
                     font-size: 12px;
-                    selection-background-color: #2a2a2a;
-                    selection-color: {INS_PINK};
-                    border: 1px solid #333333;
+                    selection-background-color: #e8f8f0;
+                    selection-color: {CLR_PRIMARY};
+                    border: 1px solid #d0d7de;
                     border-radius: 8px;
                     padding: 4px;
                     outline: none;
@@ -289,7 +289,7 @@ class MainWindow(QMainWindow):
         # FPS
         fps_row = QHBoxLayout()
         fps_dot = QLabel("●")
-        fps_dot.setStyleSheet(f"color: {STATUS_GREEN}; font-size: 8px;")
+        fps_dot.setStyleSheet(f"color: {STATUS_ON}; font-size: 8px;")
         fps_dot.setFixedWidth(16)
         fps_label = QLabel("帧率")
         fps_label.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 11px;")
@@ -310,7 +310,7 @@ class MainWindow(QMainWindow):
         # 检测人数
         face_row = QHBoxLayout()
         face_dot = QLabel("●")
-        face_dot.setStyleSheet(f"color: {INS_PURPLE}; font-size: 8px;")
+        face_dot.setStyleSheet(f"color: {CLR_SECONDARY}; font-size: 8px;")
         face_dot.setFixedWidth(16)
         face_label = QLabel("检测人数")
         face_label.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 11px;")
@@ -355,7 +355,7 @@ class MainWindow(QMainWindow):
         self.toggle_button.setStyleSheet(f"""
             QPushButton {{
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 {INS_PINK}, stop:1 {INS_PURPLE});
+                    stop:0 {CLR_PRIMARY}, stop:1 {CLR_ACCENT});
                 color: white;
                 font-size: 13px;
                 font-weight: 700;
@@ -366,15 +366,15 @@ class MainWindow(QMainWindow):
             }}
             QPushButton:hover {{
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 #ff5252, stop:1 #5a4aff);
+                    stop:0 #27ae60, stop:1 #16a085);
             }}
             QPushButton:pressed {{
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 #e04848, stop:1 #4a3ae0);
+                    stop:0 #219a52, stop:1 #148f77);
             }}
             QPushButton:checked {{
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 {STATUS_GREEN}, stop:1 #3db8b0);
+                    stop:0 {STATUS_ON}, stop:1 #27ae60);
             }}
         """)
         self.toggle_button.setCheckable(True)
@@ -391,14 +391,14 @@ class MainWindow(QMainWindow):
                 font-size: 11px;
                 font-weight: 600;
                 letter-spacing: 2px;
-                border: 1px solid #333333;
+                border: 1px solid #d0d7de;
                 border-radius: 12px;
                 padding: 12px;
             }}
             QPushButton:hover {{
-                border: 1px solid #555555;
-                color: {TEXT_PRIMARY};
-                background-color: #1a1a1a;
+                border: 1px solid {CLR_PRIMARY};
+                color: {CLR_PRIMARY};
+                background-color: #e8f8f0;
             }}
         """)
         self.exit_button.clicked.connect(self._on_exit)
@@ -427,16 +427,16 @@ class MainWindow(QMainWindow):
         # ─── 全局样式 ───
         self.setStyleSheet(f"""
             QMainWindow {{
-                background-color: {BG_DARK};
+                background-color: {BG_MAIN};
             }}
             QWidget {{
                 background-color: transparent;
             }}
             QMessageBox {{
-                background-color: #1a1a1a;
+                background-color: {BG_CARD};
                 color: {TEXT_PRIMARY};
                 font-size: 13px;
-                border: 1px solid #333333;
+                border: 1px solid #d0d7de;
                 border-radius: 12px;
             }}
             QMessageBox QLabel {{
@@ -445,21 +445,21 @@ class MainWindow(QMainWindow):
                 padding: 10px;
             }}
             QMessageBox QPushButton {{
-                background-color: #2a2a2a;
+                background-color: {BG_INPUT};
                 color: {TEXT_PRIMARY};
                 font-size: 12px;
                 font-weight: 600;
-                border: 1px solid #444444;
+                border: 1px solid #d0d7de;
                 border-radius: 8px;
                 padding: 8px 24px;
                 min-width: 80px;
             }}
             QMessageBox QPushButton:hover {{
-                background-color: #3a3a3a;
-                border: 1px solid {INS_PINK};
+                background-color: #e8ecf0;
+                border: 1px solid {CLR_PRIMARY};
             }}
             QMessageBox QPushButton:pressed {{
-                background-color: #1a1a1a;
+                background-color: #d0d7de;
             }}
         """)
 
@@ -468,14 +468,14 @@ class MainWindow(QMainWindow):
     # ═══════════════════════════════════════════════════════
 
     def _make_divider(self) -> QFrame:
-        """创建 Ins 风格分隔线"""
+        """创建清新风格分隔线"""
         div = QFrame()
         div.setFrameShape(QFrame.HLine)
         div.setStyleSheet("""
             QFrame {
-                color: #2a2a2a;
+                color: #dce1e8;
                 border: none;
-                border-top: 1px solid #2a2a2a;
+                border-top: 1px solid #dce1e8;
                 max-height: 1px;
             }
         """)
@@ -487,7 +487,7 @@ class MainWindow(QMainWindow):
         label.setAlignment(Qt.AlignRight)
         label.setStyleSheet(f"""
             QLabel {{
-                color: {INS_PINK};
+                color: {CLR_PRIMARY};
                 font-size: 14px;
                 font-weight: 700;
             }}
@@ -496,7 +496,7 @@ class MainWindow(QMainWindow):
 
     def _make_slider(self, min_val: int, max_val: int,
                      default: int, callback) -> QSlider:
-        """创建 Ins 风格滑动条"""
+        """创建清新风格滑动条"""
         slider = QSlider(Qt.Horizontal)
         slider.setRange(min_val, max_val)
         slider.setValue(default)
@@ -506,12 +506,12 @@ class MainWindow(QMainWindow):
             }}
             QSlider::groove:horizontal {{
                 height: 4px;
-                background: #2a2a2a;
+                background: #dce1e8;
                 border-radius: 2px;
             }}
             QSlider::handle:horizontal {{
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 {INS_PINK}, stop:1 {INS_PURPLE});
+                    stop:0 {CLR_PRIMARY}, stop:1 {CLR_ACCENT});
                 width: 18px;
                 height: 18px;
                 margin: -7px 0;
@@ -525,11 +525,11 @@ class MainWindow(QMainWindow):
             }}
             QSlider::sub-page:horizontal {{
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 {INS_PINK}, stop:1 {INS_PURPLE});
+                    stop:0 {CLR_PRIMARY}, stop:1 {CLR_ACCENT});
                 border-radius: 2px;
             }}
             QSlider::add-page:horizontal {{
-                background: #2a2a2a;
+                background: #dce1e8;
                 border-radius: 2px;
             }}
         """)
