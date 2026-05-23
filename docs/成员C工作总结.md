@@ -9,6 +9,94 @@
 
 ---
 
+## 附：真实模式完整调用链
+
+当前 `cascade_model.pkl` 是 B 训练好的模型，包含 **3 层级联**（共 14 个弱分类器）：
+
+| 级联层 | 弱分类器数 | 阈值 |
+|--------|-----------|------|
+| 第 1 层 | 4 个 | 1.98 |
+| 第 2 层 | 4 个 | 1.66 |
+| 第 3 层 | 6 个 | 3.18 |
+
+每个弱分类器包含一个 `FeatureDesc`（描述 Haar 特征的位置/类型/尺寸）和对应的 `alpha`/`polarity`/`threshold`。
+
+### 实时检测调用链（真实模式）
+
+```
+main.py
+  └─ MainWindow.__init__(detector)
+       └─ MainWindow.start_detection()
+            └─ VideoThread.start()
+                 └─ VideoThread.run()  ← 后台线程循环
+                      │
+                      │  每 2 帧执行一次检测（跳帧优化）：
+                      │
+                      ├─ 1. cv2.resize(frame, (320, 240))  ← 缩小图像加速
+                      │
+                      ├─ 2. Detector.detect(gray)           ← detect/detector.py
+                      │      │
+                      │      ├─ 2a. build(gray)             ← train/integral_image.py（成员 A）
+                      │      │     构建积分图（O(HW) 时间）
+                      │      │
+                      │      ├─ 2b. iter_scales(H, W, ...)  ← train/haar_features.py（成员 A）
+                      │      │     生成多尺度图像金字塔
+                      │      │
+                      │      ├─ 2c. 遍历每个尺度，滑动窗口
+                      │      │      │
+                      │      │      ├─ window_variance(iimg, r, c, size)  ← integral_image.py
+                      │      │      │   O(1) 计算子窗口方差，快速过滤纯色区域
+                      │      │      │
+                      │      │      └─ CascadeClassifier.predict_window(  ← detect/cascade_classifier.py
+                      │      │             ii, scale, win_r, win_c, variance)
+                      │      │             │
+                      │      │             ├─ 遍历 3 层级联
+                      │      │             │   ├─ 遍历每层所有弱分类器
+                      │      │             │   │   ├─ compute_feature_at_scale(  ← train/haar_features.py
+                      │      │             │   │   │     desc, ii, scale, win_r, win_c)
+                      │      │             │   │   │   在积分图上 O(1) 计算 Haar 特征值
+                      │      │             │   │   │
+                      │      │             │   │   └─ 弱分类器判决: p*f(x) < p*θ ?
+                      │      │             │   │      是 → 累加 alpha 得分
+                      │      │             │   │
+                      │      │             │   └─ 强分类器判决: score < threshold ?
+                      │      │             │      是 → 早期拒绝（返回 0）
+                      │      │             │
+                      │      │             └─ 通过所有层 → 返回 1（候选人脸）
+                      │      │
+                      │      └─ 2d. nms(candidates, iou_threshold, min_votes=2)
+                      │            ← utils/nms.py（成员 C）
+                      │            基于 IoU 合并重复框
+                      │
+                      ├─ 3. 框坐标还原到原始尺寸（320→640, 240→480）
+                      │
+                      ├─ 4. cv2.rectangle 画框 + putText 显示 FPS
+                      │
+                      └─ 5. pyqtSignal → MainWindow._update_frame() 更新 UI
+```
+
+### 涉及的文件（按调用顺序）
+
+| 文件 | 作者 | 函数/类 | 作用 |
+|------|------|---------|------|
+| `main.py` | **C** | `main()` | 系统入口 |
+| `ui/main_window.py` | **C** | `MainWindow` | UI 主窗口 |
+| `ui/video_thread.py` | **C** | `VideoThread.run()` | 视频采集循环 |
+| `detect/detector.py` | **B** + **C** | `Detector._detect_real()` | 多尺度检测调度 |
+| `train/integral_image.py` | **A** | `build()`, `window_variance()` | 积分图构建与方差计算 |
+| `train/haar_features.py` | **A** | `iter_scales()`, `compute_feature_at_scale()` | 尺度生成与特征计算 |
+| `detect/cascade_classifier.py` | **B** + **C** | `CascadeClassifier.predict_window()` | 级联推理（早期拒绝） |
+| `train/adaboost.py` | **A** | `StrongClassifier`, `WeakClassifier` | 强/弱分类器数据结构 |
+| `utils/nms.py` | **C** | `nms()` | 非极大值抑制 |
+
+### 模型文件
+
+| 文件 | 大小 | 说明 |
+|------|------|------|
+| `models/cascade_model.pkl` | 1.5 KB | B 训练的 3 层级联模型（14 个弱分类器） |
+
+---
+
 ## 二、我完成的工作
 
 ### 2.1 从零编写的模块（3 个）
