@@ -62,8 +62,8 @@ class Detector:
     def __init__(self,
                  model_path: str = "models/cascade_model.pkl",
                  scale_factor: float = 1.25,
-                 step_delta: float = 1.0,
-                 min_face_size: int = 24,
+                 step_delta: float = 1.5,
+                 min_face_size: int = 40,
                  max_face_size: int = 500,
                  use_placeholder: bool = None):
         """

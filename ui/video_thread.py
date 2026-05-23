@@ -92,6 +92,13 @@ class VideoThread(QThread):
         self._frame_count = 0          # 已处理帧数
         self._fps_start_time = time.time()  # FPS 统计起始时间
 
+        # ═══ 性能优化：跳帧检测 ═══
+        # 每 DETECT_INTERVAL 帧才做一次检测，中间帧复用上次结果
+        # 这样检测速度翻倍，但显示仍然流畅
+        self._detect_interval = 2      # 每 2 帧检测 1 次
+        self._frame_counter = 0        # 帧计数器
+        self._last_face_boxes = []     # 上次检测结果缓存
+
     # ─── 属性访问器（供 UI 调用） ───
 
     @property
@@ -203,30 +210,37 @@ class VideoThread(QThread):
                 # 更新检测器参数（与 UI 同步）
                 self.detector.min_face_size = self._min_face_size
 
-                # ═══ 性能优化：缩小检测图像 ═══
-                # 原始帧 640×480 → 缩小到 320×240（面积缩小 4 倍）
-                # 窗口数量减少约 4 倍，检测速度提升 3~4 倍
-                # 检测完后再将框坐标还原回原始尺寸
-                DETECT_WIDTH = 320
-                DETECT_HEIGHT = 240
-                detect_frame = cv2.resize(frame, (DETECT_WIDTH, DETECT_HEIGHT))
-                gray = cv2.cvtColor(detect_frame, cv2.COLOR_BGR2GRAY)
+                # ═══ 性能优化：跳帧检测 ═══
+                # 每 _detect_interval 帧才做一次检测，中间帧复用上次结果
+                # 这样检测速度翻倍，但显示仍然流畅
+                self._frame_counter += 1
+                if self._frame_counter % self._detect_interval == 0:
+                    # ═══ 性能优化：缩小检测图像 ═══
+                    # 原始帧 640×480 → 缩小到 320×240（面积缩小 4 倍）
+                    # 窗口数量减少约 4 倍，检测速度提升 3~4 倍
+                    # 检测完后再将框坐标还原回原始尺寸
+                    DETECT_WIDTH = 320
+                    DETECT_HEIGHT = 240
+                    detect_frame = cv2.resize(frame, (DETECT_WIDTH, DETECT_HEIGHT))
+                    gray = cv2.cvtColor(detect_frame, cv2.COLOR_BGR2GRAY)
 
-                # 调用检测器（内部已包含 NMS 后处理）
-                small_boxes = self.detector.detect(
-                    gray,
-                    iou_threshold=self._nms_threshold,
-                    min_votes=2
-                )
+                    # 调用检测器（内部已包含 NMS 后处理）
+                    small_boxes = self.detector.detect(
+                        gray,
+                        iou_threshold=self._nms_threshold,
+                        min_votes=2
+                    )
 
-                # 将检测框坐标从缩小后的图像还原到原始尺寸
-                scale_x = frame.shape[1] / DETECT_WIDTH
-                scale_y = frame.shape[0] / DETECT_HEIGHT
-                face_boxes = [
-                    (int(x * scale_x), int(y * scale_y),
-                     int(w * scale_x), int(h * scale_y))
-                    for (x, y, w, h) in small_boxes
-                ]
+                    # 将检测框坐标从缩小后的图像还原到原始尺寸
+                    scale_x = frame.shape[1] / DETECT_WIDTH
+                    scale_y = frame.shape[0] / DETECT_HEIGHT
+                    self._last_face_boxes = [
+                        (int(x * scale_x), int(y * scale_y),
+                         int(w * scale_x), int(h * scale_y))
+                        for (x, y, w, h) in small_boxes
+                    ]
+
+                face_boxes = self._last_face_boxes
 
             # 步骤 c：在帧上绘制检测框和 FPS
             display_frame = self._draw_detection(frame, face_boxes)
