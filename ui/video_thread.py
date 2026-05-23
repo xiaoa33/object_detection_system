@@ -203,14 +203,30 @@ class VideoThread(QThread):
                 # 更新检测器参数（与 UI 同步）
                 self.detector.min_face_size = self._min_face_size
 
+                # ═══ 性能优化：缩小检测图像 ═══
+                # 原始帧 640×480 → 缩小到 320×240（面积缩小 4 倍）
+                # 窗口数量减少约 4 倍，检测速度提升 3~4 倍
+                # 检测完后再将框坐标还原回原始尺寸
+                DETECT_WIDTH = 320
+                DETECT_HEIGHT = 240
+                detect_frame = cv2.resize(frame, (DETECT_WIDTH, DETECT_HEIGHT))
+                gray = cv2.cvtColor(detect_frame, cv2.COLOR_BGR2GRAY)
+
                 # 调用检测器（内部已包含 NMS 后处理）
-                # 注意：detect() 方法内部已经调用了 nms()，
-                # 这里不需要再重复调用，避免过度过滤
-                face_boxes = self.detector.detect(
-                    frame,
+                small_boxes = self.detector.detect(
+                    gray,
                     iou_threshold=self._nms_threshold,
-                    min_votes=2  # 占位模式用 min_votes=2，更宽松
+                    min_votes=2
                 )
+
+                # 将检测框坐标从缩小后的图像还原到原始尺寸
+                scale_x = frame.shape[1] / DETECT_WIDTH
+                scale_y = frame.shape[0] / DETECT_HEIGHT
+                face_boxes = [
+                    (int(x * scale_x), int(y * scale_y),
+                     int(w * scale_x), int(h * scale_y))
+                    for (x, y, w, h) in small_boxes
+                ]
 
             # 步骤 c：在帧上绘制检测框和 FPS
             display_frame = self._draw_detection(frame, face_boxes)

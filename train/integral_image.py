@@ -123,8 +123,6 @@ def build(img: np.ndarray) -> IntegralImage:
             f"如果是彩色图请先用 cv2.cvtColor 转换为灰度。"
         )
 
-    print(f"  [build] 构建积分图: 输入 shape={img.shape}, dtype={img.dtype}")
-
     # ── float64 转换（避免 uint8 溢出）─────────────────────
     # uint8 的最大值 255，24×24 子窗口累加最大为 255×576 ≈ 146,880，
     # 完整图像（384×288）累加最大约 2800 万，float64 可精确表示。
@@ -145,8 +143,6 @@ def build(img: np.ndarray) -> IntegralImage:
     ii_sq = np.pad(ii_sq_raw, ((1, 0), (1, 0)), mode='constant', constant_values=0)
 
     H, W = img.shape
-    print(f"  [build] 完成: ii.shape={ii.shape}, "
-          f"ii[H,W]={ii[H, W]:.1f} (应等于所有像素之和 {img_f.sum():.1f})")
 
     return IntegralImage(ii=ii, ii_sq=ii_sq, H=H, W=W)
 

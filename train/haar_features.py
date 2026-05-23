@@ -572,10 +572,6 @@ def iter_scales(img_h: int, img_w: int,
         scales.append(scale)
         scale *= scale_factor
 
-    print(f"  [iter_scales] 图像={img_h}×{img_w}, "
-          f"scale_factor={scale_factor}, "
-          f"共 {len(scales)} 个尺度: "
-          + ", ".join(f"{s:.4f}({int(round(24*s))}px)" for s in scales))
     return scales
 
 
