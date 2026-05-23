@@ -103,7 +103,7 @@ class MainWindow(QMainWindow):
 
     def _init_ui(self):
         """初始化 Ins 风格用户界面"""
-        self.setWindowTitle("FACE DETECT · INSIGHT")
+        self.setWindowTitle("实时人脸检测系统 · INSIGHT")
         self.setMinimumSize(1100, 680)
 
         # ─── 全局字体 ───
@@ -172,7 +172,7 @@ class MainWindow(QMainWindow):
         control_layout.setSpacing(18)
 
         # ─── 标题 ───
-        title_label = QLabel("⚙ CONTROL")
+        title_label = QLabel("⚙ 参数控制")
         title_label.setStyleSheet(f"""
             QLabel {{
                 color: {TEXT_SECONDARY};
@@ -189,7 +189,7 @@ class MainWindow(QMainWindow):
 
         # ─── 1. NMS 阈值 ───
         control_layout.addLayout(self._build_slider_group(
-            label_text="NMS THRESHOLD",
+            label_text="NMS 阈值 (IoU)",
             value_label=self._make_value_label("0.50"),
             slider=self._make_slider(0, 100, 50, self._on_nms_changed),
             suffix=""
@@ -197,7 +197,7 @@ class MainWindow(QMainWindow):
 
         # ─── 2. 最小人脸尺寸 ───
         control_layout.addLayout(self._build_slider_group(
-            label_text="MIN FACE SIZE",
+            label_text="最小人脸尺寸",
             value_label=self._make_value_label("24"),
             slider=self._make_slider(20, 300, 24, self._on_face_size_changed),
             suffix="px"
@@ -212,7 +212,7 @@ class MainWindow(QMainWindow):
             precision_group.setSpacing(8)
 
             precision_header = QHBoxLayout()
-            precision_label = QLabel("PRECISION")
+            precision_label = QLabel("检测精度")
             precision_label.setStyleSheet(f"""
                 QLabel {{
                     color: {TEXT_SECONDARY};
@@ -226,9 +226,9 @@ class MainWindow(QMainWindow):
             precision_group.addLayout(precision_header)
 
             self.precision_combo = QComboBox()
-            self.precision_combo.addItem("🌱  SPEED", 2.0)
-            self.precision_combo.addItem("🌿  BALANCED", 1.5)
-            self.precision_combo.addItem("🌳  ACCURACY", 1.0)
+            self.precision_combo.addItem("🌱  速度优先", 2.0)
+            self.precision_combo.addItem("🌿  平衡模式", 1.5)
+            self.precision_combo.addItem("🌳  精度优先", 1.0)
             self.precision_combo.setCurrentIndex(1)
             self.precision_combo.setStyleSheet(f"""
                 QComboBox {{
@@ -273,7 +273,7 @@ class MainWindow(QMainWindow):
         status_group = QVBoxLayout()
         status_group.setSpacing(12)
 
-        status_title = QLabel("STATUS")
+        status_title = QLabel("实时状态")
         status_title.setStyleSheet(f"""
             QLabel {{
                 color: {TEXT_SECONDARY};
@@ -289,7 +289,7 @@ class MainWindow(QMainWindow):
         fps_dot = QLabel("●")
         fps_dot.setStyleSheet(f"color: {STATUS_GREEN}; font-size: 8px;")
         fps_dot.setFixedWidth(16)
-        fps_label = QLabel("FPS")
+        fps_label = QLabel("帧率")
         fps_label.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 11px;")
         self.fps_label = QLabel("0.0")
         self.fps_label.setStyleSheet(f"""
@@ -310,7 +310,7 @@ class MainWindow(QMainWindow):
         face_dot = QLabel("●")
         face_dot.setStyleSheet(f"color: {INS_PURPLE}; font-size: 8px;")
         face_dot.setFixedWidth(16)
-        face_label = QLabel("FACES")
+        face_label = QLabel("检测人数")
         face_label.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 11px;")
         self.face_count_label = QLabel("0")
         self.face_count_label.setStyleSheet(f"""
@@ -327,7 +327,7 @@ class MainWindow(QMainWindow):
         status_group.addLayout(face_row)
 
         # 分辨率
-        self.resolution_label = QLabel("RES: -- × --")
+        self.resolution_label = QLabel("分辨率: -- × --")
         self.resolution_label.setStyleSheet(f"""
             QLabel {{
                 color: {TEXT_SECONDARY};
@@ -347,7 +347,7 @@ class MainWindow(QMainWindow):
         button_group.setSpacing(10)
 
         # 检测启停按钮（Ins 风格渐变）
-        self.toggle_button = QPushButton("■  STOP")
+        self.toggle_button = QPushButton("■  停止检测")
         self.toggle_button.setMinimumHeight(48)
         self.toggle_button.setCursor(Qt.PointingHandCursor)
         self.toggle_button.setStyleSheet(f"""
@@ -379,7 +379,7 @@ class MainWindow(QMainWindow):
         self.toggle_button.clicked.connect(self._on_toggle_detection)
 
         # 退出按钮
-        self.exit_button = QPushButton("EXIT")
+        self.exit_button = QPushButton("退出程序")
         self.exit_button.setMinimumHeight(44)
         self.exit_button.setCursor(Qt.PointingHandCursor)
         self.exit_button.setStyleSheet(f"""
@@ -406,7 +406,7 @@ class MainWindow(QMainWindow):
         control_layout.addLayout(button_group)
 
         # ─── 检测模式提示 ───
-        mode_text = "PLACEHOLDER" if self.detector.is_placeholder else "VIOLA-JONES"
+        mode_text = "占位模式" if self.detector.is_placeholder else "Viola-Jones 真实模式"
         mode_label = QLabel(f"● {mode_text}")
         mode_label.setAlignment(Qt.AlignCenter)
         mode_label.setStyleSheet(f"""
@@ -561,14 +561,14 @@ class MainWindow(QMainWindow):
                 pass
         # 找到对应的 value_label 更新
         # 用更直接的方式：遍历布局找
-        self._update_slider_value("NMS THRESHOLD", f"{threshold:.2f}")
+        self._update_slider_value("NMS 阈值 (IoU)", f"{threshold:.2f}")
 
         if self.video_thread is not None:
             self.video_thread.nms_threshold = threshold
 
     def _on_face_size_changed(self, value: int):
         """最小人脸尺寸滑动条变化回调"""
-        self._update_slider_value("MIN FACE SIZE", str(value))
+        self._update_slider_value("最小人脸尺寸", str(value))
 
         if self.video_thread is not None:
             self.video_thread.min_face_size = value
@@ -589,9 +589,9 @@ class MainWindow(QMainWindow):
         if self.video_thread is not None:
             self.video_thread.detect_enabled = not checked
             if checked:
-                self.toggle_button.setText("▶  START")
+                self.toggle_button.setText("▶  开始检测")
             else:
-                self.toggle_button.setText("■  STOP")
+                self.toggle_button.setText("■  停止检测")
 
     # ═══════════════════════════════════════════════════════
     # 视频线程管理
@@ -643,7 +643,7 @@ class MainWindow(QMainWindow):
         """更新统计信息显示"""
         self.fps_label.setText(f"{fps:.1f}")
         self.face_count_label.setText(str(face_count))
-        self.resolution_label.setText(f"RES: {frame_w} × {frame_h}")
+        self.resolution_label.setText(f"分辨率: {frame_w} × {frame_h}")
 
     # ═══════════════════════════════════════════════════════
     # 窗口事件
