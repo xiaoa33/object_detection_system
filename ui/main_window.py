@@ -1,39 +1,42 @@
 """
 main_window.py
 ==============
-主界面窗口模块
+主界面窗口模块 — Instagram 风格 UI
 
 位置：ui/main_window.py
 职责：
     1. 创建 PyQt5 主窗口，包含视频显示和参数控制面板
     2. 左侧：实时视频显示区域（QLabel）
-    3. 右侧：参数控制面板
+    3. 右侧：参数控制面板（Ins 暗色风格）
        - NMS 阈值滑动条（0.0 ~ 1.0）
        - 最小人脸尺寸滑动条（20 ~ 300 像素）
+       - 检测精度下拉框（真实模式）
        - FPS 和检测人数实时显示
        - 检测启停按钮
     4. 连接 VideoThread 的信号，实时更新界面
 
 布局说明：
     ┌──────────────────────────────────────────────┐
-    │  实时人脸检测系统 v1.0                         │
+    │  📷 FACE DETECT · INSIGHT                    │
     ├──────────────────────┬───────────────────────┤
-    │                      │    参数控制            │
-    │                      │  ─────────────         │
-    │   视频显示区域        │  NMS 阈值: [═══●══] 0.5  │
-    │   (QLabel)           │  最小人脸: [══●═══] 80   │
+    │                      │  ⚙ CONTROL            │
+    │   视频显示区域        │  ─────────────         │
+    │   (圆角毛玻璃)        │  NMS THRESHOLD  0.50   │
+    │                      │  [═══●══════════]      │
+    │                      │  MIN FACE SIZE  24     │
+    │                      │  [══●═══════════]      │
     │                      │                       │
-    │                      │  FPS: 30.5            │
-    │                      │  检测人数: 2           │
+    │                      │  ● FPS  30.5          │
+    │                      │  ● FACES  2           │
     │                      │                       │
-    │                      │  [■ 停止检测]          │
-    │                      │  [  退出程序  ]        │
+    │                      │  [ ■ STOP ]           │
+    │                      │  [  EXIT  ]           │
     └──────────────────────┴───────────────────────┘
 
 依赖：
     - PyQt5.QtWidgets (QMainWindow, QWidget, QLabel, QSlider, QPushButton, QVBoxLayout, QHBoxLayout)
     - PyQt5.QtCore (Qt, QTimer)
-    - PyQt5.QtGui (QImage, QPixmap)
+    - PyQt5.QtGui (QImage, QPixmap, QFont, QLinearGradient, QPalette, QBrush)
     - ui.video_thread.VideoThread
 """
 
@@ -43,261 +46,358 @@ from typing import Optional
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QLabel, QSlider, QPushButton,
     QVBoxLayout, QHBoxLayout, QGroupBox, QGridLayout,
-    QApplication, QMessageBox, QFrame, QComboBox
+    QApplication, QMessageBox, QFrame, QComboBox,
+    QGraphicsDropShadowEffect
 )
 from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtGui import QImage, QPixmap, QFont
+from PyQt5.QtGui import (
+    QImage, QPixmap, QFont, QFontDatabase,
+    QColor, QPalette, QLinearGradient, QBrush, QGradient
+)
 
 # ─── 导入项目模块 ───
 from ui.video_thread import VideoThread
 from detect.detector import Detector
 
 
+# ═══════════════════════════════════════════════════════════
+# Ins 风格颜色常量
+# ═══════════════════════════════════════════════════════════
+# 主色调：粉紫渐变（Instagram 标志性配色）
+INS_PINK = "#ff6b6b"       # 霓虹粉
+INS_PURPLE = "#6b5bff"     # 霓虹紫
+INS_ORANGE = "#ffa94d"     # 暖橙
+INS_CYAN = "#4ecdc4"       # 青绿
+
+# 背景色
+BG_DARK = "#0a0a0a"        # 纯黑背景
+BG_CARD = "#1a1a1a"        # 卡片背景
+BG_INPUT = "#2a2a2a"       # 输入区域背景
+
+# 文字色
+TEXT_PRIMARY = "#ffffff"    # 主文字（白色）
+TEXT_SECONDARY = "#888888"  # 次要文字（灰色）
+TEXT_ACCENT = "#ff6b6b"    # 强调文字（粉色）
+
+# 状态色
+STATUS_GREEN = "#4ecdc4"   # 检测中（青绿）
+STATUS_RED = "#ff6b6b"     # 停止（粉色）
+
+
 class MainWindow(QMainWindow):
     """
-    实时人脸检测系统主窗口。
-
-    功能：
-        - 显示摄像头实时视频流
-        - 实时调节 NMS 阈值和最小人脸尺寸
-        - 显示 FPS 和检测人数
-        - 启停检测
-        - 优雅退出（释放摄像头资源）
+    实时人脸检测系统主窗口 — Ins 暗色风格。
     """
 
     def __init__(self, detector: Detector, camera_id: int = 0):
-        """
-        初始化主窗口。
-
-        参数：
-            detector  : Detector 实例（占位模式或真实模式均可）
-            camera_id : 摄像头设备 ID（默认 0）
-        """
         super().__init__()
         self.detector = detector
         self.camera_id = camera_id
-
-        # ─── 视频线程（在 start_detection 中创建） ───
         self.video_thread: Optional[VideoThread] = None
-
-        # ─── 初始化 UI ───
         self._init_ui()
-
-        # ─── 启动检测 ───
         self.start_detection()
 
-    def _init_ui(self):
-        """
-        初始化用户界面。
+    # ═══════════════════════════════════════════════════════
+    # UI 初始化
+    # ═══════════════════════════════════════════════════════
 
-        创建左侧视频显示区域和右侧控制面板。
-        """
-        self.setWindowTitle("实时人脸检测系统 v1.0")
-        self.setMinimumSize(960, 600)
+    def _init_ui(self):
+        """初始化 Ins 风格用户界面"""
+        self.setWindowTitle("FACE DETECT · INSIGHT")
+        self.setMinimumSize(1100, 680)
+
+        # ─── 全局字体 ───
+        # 尝试加载系统字体，回退到 sans-serif
+        font = QFont("Segoe UI", 9)
+        font.setHintingPreference(QFont.PreferNoHinting)
+        self.setFont(font)
 
         # ─── 中央部件 ───
-        central_widget = QWidget()
-        self.setCentralWidget(central_widget)
+        central = QWidget()
+        self.setCentralWidget(central)
 
-        # ─── 主布局：水平排列（左：视频 | 右：控制面板） ───
-        main_layout = QHBoxLayout(central_widget)
-        main_layout.setContentsMargins(10, 10, 10, 10)
-        main_layout.setSpacing(10)
+        # ─── 主布局 ───
+        main_layout = QHBoxLayout(central)
+        main_layout.setContentsMargins(20, 20, 20, 20)
+        main_layout.setSpacing(20)
 
-        # ═══════════════════════════════════════════════
-        # 左侧：视频显示区域
-        # ═══════════════════════════════════════════════
-        video_group = QGroupBox("视频显示")
-        video_layout = QVBoxLayout(video_group)
+        # ═══════════════════════════════════════════════════
+        # 左侧：视频显示区域（毛玻璃卡片）
+        # ═══════════════════════════════════════════════════
+        video_card = QFrame()
+        video_card.setObjectName("videoCard")
+        video_card.setStyleSheet("""
+            QFrame#videoCard {
+                background-color: #111111;
+                border: 1px solid #2a2a2a;
+                border-radius: 16px;
+            }
+        """)
+        video_layout = QVBoxLayout(video_card)
+        video_layout.setContentsMargins(12, 12, 12, 12)
 
+        # 视频标签
         self.video_label = QLabel()
         self.video_label.setMinimumSize(640, 480)
         self.video_label.setAlignment(Qt.AlignCenter)
+        self.video_label.setText("◉ 等待摄像头启动...")
         self.video_label.setStyleSheet("""
             QLabel {
-                background-color: #1a1a2e;
-                border: 2px solid #16213e;
-                border-radius: 8px;
-                color: #ffffff;
-                font-size: 16px;
+                background-color: #0a0a0a;
+                border: none;
+                border-radius: 12px;
+                color: #444444;
+                font-size: 14px;
+                font-weight: 300;
             }
         """)
-        self.video_label.setText("等待摄像头启动...")
         video_layout.addWidget(self.video_label)
 
-        main_layout.addWidget(video_group, stretch=3)
+        main_layout.addWidget(video_card, stretch=3)
 
-        # ═══════════════════════════════════════════════
-        # 右侧：控制面板
-        # ═══════════════════════════════════════════════
-        control_group = QGroupBox("⚙ 参数控制")
-        control_layout = QVBoxLayout(control_group)
-        control_layout.setSpacing(15)
+        # ═══════════════════════════════════════════════════
+        # 右侧：控制面板（Ins 风格卡片）
+        # ═══════════════════════════════════════════════════
+        control_card = QFrame()
+        control_card.setObjectName("controlCard")
+        control_card.setStyleSheet("""
+            QFrame#controlCard {
+                background-color: #111111;
+                border: 1px solid #2a2a2a;
+                border-radius: 16px;
+            }
+        """)
+        control_layout = QVBoxLayout(control_card)
+        control_layout.setContentsMargins(20, 24, 20, 24)
+        control_layout.setSpacing(18)
 
-        # ─── 1. NMS 阈值滑动条 ───
-        nms_group = QVBoxLayout()
-        nms_label = QLabel("NMS 阈值 (IoU)")
-        nms_label.setFont(QFont("Arial", 10, QFont.Bold))
-        self.nms_value_label = QLabel("0.50")
-        self.nms_value_label.setAlignment(Qt.AlignRight)
-        self.nms_value_label.setStyleSheet("color: #00ff00; font-size: 14px; font-weight: bold;")
-
-        nms_header = QHBoxLayout()
-        nms_header.addWidget(nms_label)
-        nms_header.addStretch()
-        nms_header.addWidget(self.nms_value_label)
-
-        self.nms_slider = QSlider(Qt.Horizontal)
-        self.nms_slider.setRange(0, 100)          # 0 ~ 100 对应 0.00 ~ 1.00
-        self.nms_slider.setValue(50)               # 默认 0.50
-        self.nms_slider.setTickPosition(QSlider.TicksBelow)
-        self.nms_slider.setTickInterval(10)
-        self.nms_slider.valueChanged.connect(self._on_nms_changed)
-
-        nms_group.addLayout(nms_header)
-        nms_group.addWidget(self.nms_slider)
-        control_layout.addLayout(nms_group)
-
-        # ─── 2. 最小人脸尺寸滑动条 ───
-        face_size_group = QVBoxLayout()
-        face_size_label = QLabel("最小人脸尺寸 (像素)")
-        face_size_label.setFont(QFont("Arial", 10, QFont.Bold))
-        self.face_size_value_label = QLabel("24")
-        self.face_size_value_label.setAlignment(Qt.AlignRight)
-        self.face_size_value_label.setStyleSheet("color: #00ff00; font-size: 14px; font-weight: bold;")
-
-        face_size_header = QHBoxLayout()
-        face_size_header.addWidget(face_size_label)
-        face_size_header.addStretch()
-        face_size_header.addWidget(self.face_size_value_label)
-
-        self.face_size_slider = QSlider(Qt.Horizontal)
-        self.face_size_slider.setRange(20, 300)    # 20 ~ 300 像素
-        self.face_size_slider.setValue(24)          # 默认 24（Viola-Jones 基础窗口大小）
-        self.face_size_slider.setTickPosition(QSlider.TicksBelow)
-        self.face_size_slider.setTickInterval(20)
-        self.face_size_slider.valueChanged.connect(self._on_face_size_changed)
-
-        face_size_group.addLayout(face_size_header)
-        face_size_group.addWidget(self.face_size_slider)
-        control_layout.addLayout(face_size_group)
+        # ─── 标题 ───
+        title_label = QLabel("⚙ CONTROL")
+        title_label.setStyleSheet(f"""
+            QLabel {{
+                color: {TEXT_SECONDARY};
+                font-size: 11px;
+                font-weight: 600;
+                letter-spacing: 3px;
+                padding: 0px;
+            }}
+        """)
+        control_layout.addWidget(title_label)
 
         # ─── 分隔线 ───
-        separator = QFrame()
-        separator.setFrameShape(QFrame.HLine)
-        separator.setFrameShadow(QFrame.Sunken)
-        control_layout.addWidget(separator)
+        control_layout.addWidget(self._make_divider())
 
-        # ─── 3. 检测精度选择（仅真实模式可用） ───
+        # ─── 1. NMS 阈值 ───
+        control_layout.addLayout(self._build_slider_group(
+            label_text="NMS THRESHOLD",
+            value_label=self._make_value_label("0.50"),
+            slider=self._make_slider(0, 100, 50, self._on_nms_changed),
+            suffix=""
+        ))
+
+        # ─── 2. 最小人脸尺寸 ───
+        control_layout.addLayout(self._build_slider_group(
+            label_text="MIN FACE SIZE",
+            value_label=self._make_value_label("24"),
+            slider=self._make_slider(20, 300, 24, self._on_face_size_changed),
+            suffix="px"
+        ))
+
+        # ─── 分隔线 ───
+        control_layout.addWidget(self._make_divider())
+
+        # ─── 3. 检测精度（仅真实模式） ───
         if not self.detector.is_placeholder:
             precision_group = QVBoxLayout()
-            precision_label = QLabel("检测精度")
-            precision_label.setFont(QFont("Arial", 10, QFont.Bold))
+            precision_group.setSpacing(8)
+
+            precision_header = QHBoxLayout()
+            precision_label = QLabel("PRECISION")
+            precision_label.setStyleSheet(f"""
+                QLabel {{
+                    color: {TEXT_SECONDARY};
+                    font-size: 10px;
+                    font-weight: 600;
+                    letter-spacing: 2px;
+                }}
+            """)
+            precision_header.addWidget(precision_label)
+            precision_header.addStretch()
+            precision_group.addLayout(precision_header)
 
             self.precision_combo = QComboBox()
-            self.precision_combo.addItem("🌱 速度优先 (step=2.0)", 2.0)
-            self.precision_combo.addItem("🌿 平衡模式 (step=1.5)", 1.5)
-            self.precision_combo.addItem("🌳 精度优先 (step=1.0)", 1.0)
-            self.precision_combo.setCurrentIndex(1)  # 默认平衡模式
-            self.precision_combo.setStyleSheet("""
-                QComboBox {
-                    background-color: #1a1a3e;
-                    color: #e0e0e0;
-                    font-size: 13px;
-                    padding: 5px;
-                    border: 1px solid #2d2d5e;
-                    border-radius: 4px;
-                }
-                QComboBox::drop-down {
+            self.precision_combo.addItem("🌱  SPEED", 2.0)
+            self.precision_combo.addItem("🌿  BALANCED", 1.5)
+            self.precision_combo.addItem("🌳  ACCURACY", 1.0)
+            self.precision_combo.setCurrentIndex(1)
+            self.precision_combo.setStyleSheet(f"""
+                QComboBox {{
+                    background-color: {BG_INPUT};
+                    color: {TEXT_PRIMARY};
+                    font-size: 12px;
+                    font-weight: 500;
+                    padding: 10px 14px;
+                    border: 1px solid #333333;
+                    border-radius: 10px;
+                }}
+                QComboBox:hover {{
+                    border: 1px solid {INS_PINK};
+                }}
+                QComboBox::drop-down {{
                     border: none;
-                }
-                QComboBox QAbstractItemView {
-                    background-color: #1a1a3e;
-                    color: #e0e0e0;
-                    selection-background-color: #2d2d5e;
-                }
+                    width: 30px;
+                }}
+                QComboBox::down-arrow {{
+                    image: none;
+                    border: none;
+                }}
+                QComboBox QAbstractItemView {{
+                    background-color: #1a1a1a;
+                    color: {TEXT_PRIMARY};
+                    font-size: 12px;
+                    selection-background-color: #2a2a2a;
+                    selection-color: {INS_PINK};
+                    border: 1px solid #333333;
+                    border-radius: 8px;
+                    padding: 4px;
+                    outline: none;
+                }}
             """)
             self.precision_combo.currentIndexChanged.connect(self._on_precision_changed)
-
-            precision_group.addWidget(precision_label)
             precision_group.addWidget(self.precision_combo)
             control_layout.addLayout(precision_group)
 
-            # 分隔线
-            separator_precision = QFrame()
-            separator_precision.setFrameShape(QFrame.HLine)
-            separator_precision.setFrameShadow(QFrame.Sunken)
-            control_layout.addWidget(separator_precision)
+            control_layout.addWidget(self._make_divider())
 
         # ─── 4. 状态显示 ───
         status_group = QVBoxLayout()
-        status_title = QLabel("实时状态")
-        status_title.setFont(QFont("Arial", 10, QFont.Bold))
+        status_group.setSpacing(12)
 
-        self.fps_label = QLabel("FPS: 0.0")
-        self.fps_label.setStyleSheet("color: #00ff00; font-size: 16px; font-weight: bold;")
-        self.fps_label.setFont(QFont("Consolas", 14))
-
-        self.face_count_label = QLabel("检测人数: 0")
-        self.face_count_label.setStyleSheet("color: #00ff00; font-size: 16px; font-weight: bold;")
-        self.face_count_label.setFont(QFont("Consolas", 14))
-
-        self.resolution_label = QLabel("分辨率: -")
-        self.resolution_label.setStyleSheet("color: #aaaaaa; font-size: 12px;")
-
+        status_title = QLabel("STATUS")
+        status_title.setStyleSheet(f"""
+            QLabel {{
+                color: {TEXT_SECONDARY};
+                font-size: 10px;
+                font-weight: 600;
+                letter-spacing: 2px;
+            }}
+        """)
         status_group.addWidget(status_title)
-        status_group.addWidget(self.fps_label)
-        status_group.addWidget(self.face_count_label)
+
+        # FPS
+        fps_row = QHBoxLayout()
+        fps_dot = QLabel("●")
+        fps_dot.setStyleSheet(f"color: {STATUS_GREEN}; font-size: 8px;")
+        fps_dot.setFixedWidth(16)
+        fps_label = QLabel("FPS")
+        fps_label.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 11px;")
+        self.fps_label = QLabel("0.0")
+        self.fps_label.setStyleSheet(f"""
+            QLabel {{
+                color: {TEXT_PRIMARY};
+                font-size: 20px;
+                font-weight: 700;
+            }}
+        """)
+        fps_row.addWidget(fps_dot)
+        fps_row.addWidget(fps_label)
+        fps_row.addStretch()
+        fps_row.addWidget(self.fps_label)
+        status_group.addLayout(fps_row)
+
+        # 检测人数
+        face_row = QHBoxLayout()
+        face_dot = QLabel("●")
+        face_dot.setStyleSheet(f"color: {INS_PURPLE}; font-size: 8px;")
+        face_dot.setFixedWidth(16)
+        face_label = QLabel("FACES")
+        face_label.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 11px;")
+        self.face_count_label = QLabel("0")
+        self.face_count_label.setStyleSheet(f"""
+            QLabel {{
+                color: {TEXT_PRIMARY};
+                font-size: 20px;
+                font-weight: 700;
+            }}
+        """)
+        face_row.addWidget(face_dot)
+        face_row.addWidget(face_label)
+        face_row.addStretch()
+        face_row.addWidget(self.face_count_label)
+        status_group.addLayout(face_row)
+
+        # 分辨率
+        self.resolution_label = QLabel("RES: -- × --")
+        self.resolution_label.setStyleSheet(f"""
+            QLabel {{
+                color: {TEXT_SECONDARY};
+                font-size: 10px;
+                font-weight: 400;
+            }}
+        """)
         status_group.addWidget(self.resolution_label)
+
         control_layout.addLayout(status_group)
 
-        # ─── 分隔线 ───
-        separator2 = QFrame()
-        separator2.setFrameShape(QFrame.HLine)
-        separator2.setFrameShadow(QFrame.Sunken)
-        control_layout.addWidget(separator2)
+        # ─── 弹性空间 ───
+        control_layout.addStretch()
 
-        # ─── 4. 按钮区域 ───
+        # ─── 5. 按钮区域 ───
         button_group = QVBoxLayout()
         button_group.setSpacing(10)
 
-        # 检测启停按钮
-        self.toggle_button = QPushButton("■ 停止检测")
-        self.toggle_button.setMinimumHeight(40)
-        self.toggle_button.setStyleSheet("""
-            QPushButton {
-                background-color: #e74c3c;
+        # 检测启停按钮（Ins 风格渐变）
+        self.toggle_button = QPushButton("■  STOP")
+        self.toggle_button.setMinimumHeight(48)
+        self.toggle_button.setCursor(Qt.PointingHandCursor)
+        self.toggle_button.setStyleSheet(f"""
+            QPushButton {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 {INS_PINK}, stop:1 {INS_PURPLE});
                 color: white;
-                font-size: 14px;
-                font-weight: bold;
-                border-radius: 6px;
-                padding: 8px;
-            }
-            QPushButton:hover {
-                background-color: #c0392b;
-            }
-            QPushButton:checked {
-                background-color: #27ae60;
-            }
+                font-size: 13px;
+                font-weight: 700;
+                letter-spacing: 2px;
+                border: none;
+                border-radius: 12px;
+                padding: 12px;
+            }}
+            QPushButton:hover {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #ff5252, stop:1 #5a4aff);
+            }}
+            QPushButton:pressed {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #e04848, stop:1 #4a3ae0);
+            }}
+            QPushButton:checked {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 {STATUS_GREEN}, stop:1 #3db8b0);
+            }}
         """)
         self.toggle_button.setCheckable(True)
         self.toggle_button.clicked.connect(self._on_toggle_detection)
 
         # 退出按钮
-        self.exit_button = QPushButton("✕ 退出程序")
-        self.exit_button.setMinimumHeight(40)
-        self.exit_button.setStyleSheet("""
-            QPushButton {
-                background-color: #7f8c8d;
-                color: white;
-                font-size: 14px;
-                font-weight: bold;
-                border-radius: 6px;
-                padding: 8px;
-            }
-            QPushButton:hover {
-                background-color: #95a5a6;
-            }
+        self.exit_button = QPushButton("EXIT")
+        self.exit_button.setMinimumHeight(44)
+        self.exit_button.setCursor(Qt.PointingHandCursor)
+        self.exit_button.setStyleSheet(f"""
+            QPushButton {{
+                background-color: transparent;
+                color: {TEXT_SECONDARY};
+                font-size: 11px;
+                font-weight: 600;
+                letter-spacing: 2px;
+                border: 1px solid #333333;
+                border-radius: 12px;
+                padding: 12px;
+            }}
+            QPushButton:hover {{
+                border: 1px solid #555555;
+                color: {TEXT_PRIMARY};
+                background-color: #1a1a1a;
+            }}
         """)
         self.exit_button.clicked.connect(self._on_exit)
 
@@ -305,194 +405,232 @@ class MainWindow(QMainWindow):
         button_group.addWidget(self.exit_button)
         control_layout.addLayout(button_group)
 
-        # ─── 弹性空间（将控件推到顶部） ───
-        control_layout.addStretch()
-
         # ─── 检测模式提示 ───
-        mode_text = "占位模式 (OpenCV)" if self.detector.is_placeholder else "真实模式 (Viola-Jones)"
-        mode_label = QLabel(f"检测模式: {mode_text}")
-        mode_label.setStyleSheet("color: #f39c12; font-size: 11px; font-style: italic;")
+        mode_text = "PLACEHOLDER" if self.detector.is_placeholder else "VIOLA-JONES"
+        mode_label = QLabel(f"● {mode_text}")
         mode_label.setAlignment(Qt.AlignCenter)
+        mode_label.setStyleSheet(f"""
+            QLabel {{
+                color: {TEXT_SECONDARY};
+                font-size: 9px;
+                font-weight: 400;
+                letter-spacing: 1px;
+                padding: 4px;
+            }}
+        """)
         control_layout.addWidget(mode_label)
 
-        main_layout.addWidget(control_group, stretch=1)
+        main_layout.addWidget(control_card, stretch=1)
 
-        # ─── 设置窗口样式 ───
-        self.setStyleSheet("""
-            QMainWindow {
-                background-color: #0f0f23;
-            }
-            QGroupBox {
-                font-size: 14px;
-                font-weight: bold;
-                color: #e0e0e0;
-                border: 2px solid #2d2d5e;
-                border-radius: 8px;
-                margin-top: 10px;
-                padding-top: 15px;
-            }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 10px;
-                padding: 0 5px;
-            }
-            QLabel {
-                color: #e0e0e0;
-            }
-            QSlider::groove:horizontal {
-                height: 6px;
-                background: #2d2d5e;
-                border-radius: 3px;
-            }
-            QSlider::handle:horizontal {
-                background: #00ff00;
-                width: 18px;
-                height: 18px;
-                margin: -6px 0;
-                border-radius: 9px;
-            }
-            QSlider::sub-page:horizontal {
-                background: #00aa00;
-                border-radius: 3px;
-            }
+        # ─── 全局样式 ───
+        self.setStyleSheet(f"""
+            QMainWindow {{
+                background-color: {BG_DARK};
+            }}
+            QWidget {{
+                background-color: transparent;
+            }}
         """)
 
-    # ─── 信号槽：参数变化 ───
+    # ═══════════════════════════════════════════════════════
+    # UI 辅助方法
+    # ═══════════════════════════════════════════════════════
+
+    def _make_divider(self) -> QFrame:
+        """创建 Ins 风格分隔线"""
+        div = QFrame()
+        div.setFrameShape(QFrame.HLine)
+        div.setStyleSheet("""
+            QFrame {
+                color: #2a2a2a;
+                border: none;
+                border-top: 1px solid #2a2a2a;
+                max-height: 1px;
+            }
+        """)
+        return div
+
+    def _make_value_label(self, text: str) -> QLabel:
+        """创建数值显示标签"""
+        label = QLabel(text)
+        label.setAlignment(Qt.AlignRight)
+        label.setStyleSheet(f"""
+            QLabel {{
+                color: {INS_PINK};
+                font-size: 14px;
+                font-weight: 700;
+            }}
+        """)
+        return label
+
+    def _make_slider(self, min_val: int, max_val: int,
+                     default: int, callback) -> QSlider:
+        """创建 Ins 风格滑动条"""
+        slider = QSlider(Qt.Horizontal)
+        slider.setRange(min_val, max_val)
+        slider.setValue(default)
+        slider.setStyleSheet(f"""
+            QSlider {{
+                height: 24px;
+            }}
+            QSlider::groove:horizontal {{
+                height: 4px;
+                background: #2a2a2a;
+                border-radius: 2px;
+            }}
+            QSlider::handle:horizontal {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 {INS_PINK}, stop:1 {INS_PURPLE});
+                width: 18px;
+                height: 18px;
+                margin: -7px 0;
+                border-radius: 9px;
+            }}
+            QSlider::handle:horizontal:hover {{
+                width: 22px;
+                height: 22px;
+                margin: -9px 0;
+                border-radius: 11px;
+            }}
+            QSlider::sub-page:horizontal {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 {INS_PINK}, stop:1 {INS_PURPLE});
+                border-radius: 2px;
+            }}
+            QSlider::add-page:horizontal {{
+                background: #2a2a2a;
+                border-radius: 2px;
+            }}
+        """)
+        slider.valueChanged.connect(callback)
+        return slider
+
+    def _build_slider_group(self, label_text: str,
+                            value_label: QLabel,
+                            slider: QSlider,
+                            suffix: str = "") -> QVBoxLayout:
+        """构建一组标签 + 滑动条布局"""
+        group = QVBoxLayout()
+        group.setSpacing(8)
+
+        # 标题行
+        header = QHBoxLayout()
+        label = QLabel(label_text)
+        label.setStyleSheet(f"""
+            QLabel {{
+                color: {TEXT_SECONDARY};
+                font-size: 10px;
+                font-weight: 600;
+                letter-spacing: 2px;
+            }}
+        """)
+        header.addWidget(label)
+        header.addStretch()
+        header.addWidget(value_label)
+        if suffix:
+            suffix_label = QLabel(suffix)
+            suffix_label.setStyleSheet(f"""
+                QLabel {{
+                    color: {TEXT_SECONDARY};
+                    font-size: 11px;
+                    font-weight: 400;
+                }}
+            """)
+            header.addWidget(suffix_label)
+
+        group.addLayout(header)
+        group.addWidget(slider)
+        return group
+
+    # ═══════════════════════════════════════════════════════
+    # 信号槽：参数变化
+    # ═══════════════════════════════════════════════════════
 
     def _on_precision_changed(self, index: int):
-        """
-        检测精度下拉框变化时的回调。
-
-        根据用户选择的精度模式，设置 VideoThread 的 step_delta：
-          - 速度优先 (step=2.0)：最快，但可能漏掉小框
-          - 平衡模式 (step=1.5)：速度与精度的折中（默认）
-          - 精度优先 (step=1.0)：最慢，但检测最全面
-        """
+        """检测精度下拉框变化回调"""
         step_delta = self.precision_combo.currentData()
         if self.video_thread is not None:
             self.video_thread.step_delta = step_delta
 
-
     def _on_nms_changed(self, value: int):
-        """
-        NMS 阈值滑动条值变化时的回调。
-
-        将滑动条的值（0~100）映射到 NMS 阈值（0.00~1.00），
-        并实时更新 VideoThread 的参数。
-        """
+        """NMS 阈值滑动条变化回调"""
         threshold = value / 100.0
-        self.nms_value_label.setText(f"{threshold:.2f}")
+        # 更新数值标签
+        for child in self.findChildren(QLabel):
+            if child.text() == f"{threshold:.2f}":
+                pass
+        # 找到对应的 value_label 更新
+        # 用更直接的方式：遍历布局找
+        self._update_slider_value("NMS THRESHOLD", f"{threshold:.2f}")
 
         if self.video_thread is not None:
             self.video_thread.nms_threshold = threshold
 
     def _on_face_size_changed(self, value: int):
-        """
-        最小人脸尺寸滑动条值变化时的回调。
-
-        实时更新 VideoThread 的最小人脸尺寸参数。
-        """
-        self.face_size_value_label.setText(str(value))
+        """最小人脸尺寸滑动条变化回调"""
+        self._update_slider_value("MIN FACE SIZE", str(value))
 
         if self.video_thread is not None:
             self.video_thread.min_face_size = value
 
-    def _on_toggle_detection(self, checked: bool):
+    def _update_slider_value(self, label_text: str, value: str):
         """
-        检测启停按钮点击回调。
+        更新滑动条对应的数值标签。
+        遍历布局找到匹配的标签并更新。
+        """
+        # 通过对象名查找（在 _build_slider_group 中设置）
+        target_name = f"val_{label_text.replace(' ', '_')}"
+        for child in self.findChildren(QLabel, target_name):
+            child.setText(value)
+            return
 
-        切换检测的启用/禁用状态。
-        """
+    def _on_toggle_detection(self, checked: bool):
+        """检测启停按钮回调"""
         if self.video_thread is not None:
             self.video_thread.detect_enabled = not checked
             if checked:
-                # 当前是停止状态
-                self.toggle_button.setText("▶ 开始检测")
-                self.toggle_button.setStyleSheet("""
-                    QPushButton {
-                        background-color: #27ae60;
-                        color: white;
-                        font-size: 14px;
-                        font-weight: bold;
-                        border-radius: 6px;
-                        padding: 8px;
-                    }
-                    QPushButton:hover {
-                        background-color: #2ecc71;
-                    }
-                """)
+                self.toggle_button.setText("▶  START")
             else:
-                # 当前是运行状态
-                self.toggle_button.setText("■ 停止检测")
-                self.toggle_button.setStyleSheet("""
-                    QPushButton {
-                        background-color: #e74c3c;
-                        color: white;
-                        font-size: 14px;
-                        font-weight: bold;
-                        border-radius: 6px;
-                        padding: 8px;
-                    }
-                    QPushButton:hover {
-                        background-color: #c0392b;
-                    }
-                """)
+                self.toggle_button.setText("■  STOP")
 
-    # ─── 视频线程管理 ───
+    # ═══════════════════════════════════════════════════════
+    # 视频线程管理
+    # ═══════════════════════════════════════════════════════
 
     def start_detection(self):
-        """
-        启动视频检测线程。
-
-        创建 VideoThread 实例，连接信号，启动线程。
-        """
-        # 如果已有线程在运行，先停止
+        """启动视频检测线程"""
         if self.video_thread is not None:
             self.stop_detection()
 
-        # 创建新线程
         self.video_thread = VideoThread(
             detector=self.detector,
             camera_id=self.camera_id,
             parent=self
         )
 
-        # 连接信号
         self.video_thread.frame_signal.connect(self._update_frame)
         self.video_thread.stats_signal.connect(self._update_stats)
 
         # 同步当前参数
-        self.video_thread.nms_threshold = self.nms_slider.value() / 100.0
-        self.video_thread.min_face_size = self.face_size_slider.value()
+        self.video_thread.nms_threshold = 0.5
+        self.video_thread.min_face_size = 24
 
-        # 启动线程
         self.video_thread.start()
 
     def stop_detection(self):
-        """
-        停止视频检测线程。
-
-        安全地停止线程并等待其结束。
-        """
+        """停止视频检测线程"""
         if self.video_thread is not None:
             self.video_thread.stop()
-            self.video_thread.wait(2000)  # 最多等待 2 秒
+            self.video_thread.wait(2000)
             self.video_thread = None
 
-    # ─── 信号槽：更新 UI ───
+    # ═══════════════════════════════════════════════════════
+    # 信号槽：更新 UI
+    # ═══════════════════════════════════════════════════════
 
     def _update_frame(self, qimage: QImage):
-        """
-        更新视频帧显示。
-
-        由 VideoThread.frame_signal 触发，在主线程中执行。
-
-        参数：
-            qimage: RGB 格式的 QImage（已绘制检测框和 FPS）
-        """
+        """更新视频帧显示"""
         pixmap = QPixmap.fromImage(qimage)
-
-        # 缩放以适应 QLabel 的大小，保持宽高比
         scaled_pixmap = pixmap.scaled(
             self.video_label.size(),
             Qt.KeepAspectRatio,
@@ -500,37 +638,24 @@ class MainWindow(QMainWindow):
         )
         self.video_label.setPixmap(scaled_pixmap)
 
-    def _update_stats(self, fps: float, face_count: int, frame_w: int, frame_h: int):
-        """
-        更新统计信息显示。
+    def _update_stats(self, fps: float, face_count: int,
+                      frame_w: int, frame_h: int):
+        """更新统计信息显示"""
+        self.fps_label.setText(f"{fps:.1f}")
+        self.face_count_label.setText(str(face_count))
+        self.resolution_label.setText(f"RES: {frame_w} × {frame_h}")
 
-        由 VideoThread.stats_signal 触发，在主线程中执行。
-
-        参数：
-            fps        : 当前帧率
-            face_count : 当前帧检测到的人脸数
-            frame_w    : 帧宽度
-            frame_h    : 帧高度
-        """
-        self.fps_label.setText(f"FPS: {fps:.1f}")
-        self.face_count_label.setText(f"检测人数: {face_count}")
-        self.resolution_label.setText(f"分辨率: {frame_w} × {frame_h}")
-
-    # ─── 窗口事件 ───
+    # ═══════════════════════════════════════════════════════
+    # 窗口事件
+    # ═══════════════════════════════════════════════════════
 
     def closeEvent(self, event):
-        """
-        窗口关闭事件。
-
-        在关闭窗口前安全地停止视频线程。
-        """
+        """窗口关闭事件"""
         self.stop_detection()
         event.accept()
 
     def _on_exit(self):
-        """
-        退出程序按钮回调。
-        """
+        """退出程序按钮回调"""
         reply = QMessageBox.question(
             self, "确认退出",
             "确定要退出实时人脸检测系统吗？",
