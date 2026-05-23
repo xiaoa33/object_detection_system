@@ -107,8 +107,8 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(1100, 680)
 
         # ─── 全局字体 ───
-        # 尝试加载系统字体，回退到 sans-serif
-        font = QFont("Segoe UI", 9)
+        # 使用稍大的字体，提高可读性
+        font = QFont("Segoe UI", 11)
         font.setHintingPreference(QFont.PreferNoHinting)
         self.setFont(font)
 
@@ -188,17 +188,19 @@ class MainWindow(QMainWindow):
         control_layout.addWidget(self._make_divider())
 
         # ─── 1. NMS 阈值 ───
+        self._nms_value_label = self._make_value_label("0.50")
         control_layout.addLayout(self._build_slider_group(
             label_text="NMS 阈值 (IoU)",
-            value_label=self._make_value_label("0.50"),
+            value_label=self._nms_value_label,
             slider=self._make_slider(0, 100, 50, self._on_nms_changed),
             suffix=""
         ))
 
         # ─── 2. 最小人脸尺寸 ───
+        self._face_size_value_label = self._make_value_label("24")
         control_layout.addLayout(self._build_slider_group(
             label_text="最小人脸尺寸",
-            value_label=self._make_value_label("24"),
+            value_label=self._face_size_value_label,
             slider=self._make_slider(20, 300, 24, self._on_face_size_changed),
             suffix="px"
         ))
@@ -226,9 +228,9 @@ class MainWindow(QMainWindow):
             precision_group.addLayout(precision_header)
 
             self.precision_combo = QComboBox()
-            self.precision_combo.addItem("🌱  速度优先", 2.0)
-            self.precision_combo.addItem("🌿  平衡模式", 1.5)
-            self.precision_combo.addItem("🌳  精度优先", 1.0)
+            self.precision_combo.addItem("🌱  速度优先 (step=2.0)", 2.0)
+            self.precision_combo.addItem("🌿  平衡模式 (step=1.5)", 1.5)
+            self.precision_combo.addItem("🌳  精度优先 (step=1.0)", 1.0)
             self.precision_combo.setCurrentIndex(1)
             self.precision_combo.setStyleSheet(f"""
                 QComboBox {{
@@ -555,34 +557,17 @@ class MainWindow(QMainWindow):
     def _on_nms_changed(self, value: int):
         """NMS 阈值滑动条变化回调"""
         threshold = value / 100.0
-        # 更新数值标签
-        for child in self.findChildren(QLabel):
-            if child.text() == f"{threshold:.2f}":
-                pass
-        # 找到对应的 value_label 更新
-        # 用更直接的方式：遍历布局找
-        self._update_slider_value("NMS 阈值 (IoU)", f"{threshold:.2f}")
-
+        # 直接更新保存的数值标签引用
+        self._nms_value_label.setText(f"{threshold:.2f}")
         if self.video_thread is not None:
             self.video_thread.nms_threshold = threshold
 
     def _on_face_size_changed(self, value: int):
         """最小人脸尺寸滑动条变化回调"""
-        self._update_slider_value("最小人脸尺寸", str(value))
-
+        # 直接更新保存的数值标签引用
+        self._face_size_value_label.setText(str(value))
         if self.video_thread is not None:
             self.video_thread.min_face_size = value
-
-    def _update_slider_value(self, label_text: str, value: str):
-        """
-        更新滑动条对应的数值标签。
-        遍历布局找到匹配的标签并更新。
-        """
-        # 通过对象名查找（在 _build_slider_group 中设置）
-        target_name = f"val_{label_text.replace(' ', '_')}"
-        for child in self.findChildren(QLabel, target_name):
-            child.setText(value)
-            return
 
     def _on_toggle_detection(self, checked: bool):
         """检测启停按钮回调"""
