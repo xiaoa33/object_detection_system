@@ -431,6 +431,7 @@ class MainWindow(QMainWindow):
             }}
             QWidget {{
                 background-color: transparent;
+                font-family: "Microsoft YaHei";
             }}
             QMessageBox {{
                 background-color: {BG_CARD};
