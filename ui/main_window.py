@@ -107,8 +107,8 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(1100, 680)
 
         # ─── 全局字体 ───
-        # 使用稍大的字体，提高可读性
-        font = QFont("Segoe UI", 11)
+        # 使用大字体，提高可读性
+        font = QFont("Segoe UI", 14)
         font.setHintingPreference(QFont.PreferNoHinting)
         self.setFont(font)
 
