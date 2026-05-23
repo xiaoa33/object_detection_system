@@ -99,6 +99,13 @@ class VideoThread(QThread):
         self._frame_counter = 0        # 帧计数器
         self._last_face_boxes = []     # 上次检测结果缓存
 
+        # ═══ 检测精度（步长系数） ═══
+        # step_delta 控制滑动窗口步长：
+        #   1.0 = 精度优先（窗口密，检测慢）
+        #   1.5 = 平衡模式（默认）
+        #   2.0 = 速度优先（窗口疏，检测快）
+        self._step_delta = 1.5
+
     # ─── 属性访问器（供 UI 调用） ───
 
     @property
@@ -139,6 +146,21 @@ class VideoThread(QThread):
         禁用时只显示视频流，不画检测框。
         """
         self._detect_enabled = enabled
+
+    @property
+    def step_delta(self) -> float:
+        """获取当前检测步长系数"""
+        return self._step_delta
+
+    @step_delta.setter
+    def step_delta(self, value: float):
+        """
+        设置检测步长系数。
+        参数 value: 1.0（精度优先）~ 2.0（速度优先）
+        """
+        self._step_delta = max(1.0, min(2.0, value))
+        # 同步到检测器
+        self.detector.step_delta = self._step_delta
 
     # ─── 线程控制 ───
 

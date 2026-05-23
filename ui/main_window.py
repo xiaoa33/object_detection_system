@@ -43,7 +43,7 @@ from typing import Optional
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QLabel, QSlider, QPushButton,
     QVBoxLayout, QHBoxLayout, QGroupBox, QGridLayout,
-    QApplication, QMessageBox, QFrame
+    QApplication, QMessageBox, QFrame, QComboBox
 )
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QImage, QPixmap, QFont
@@ -188,7 +188,48 @@ class MainWindow(QMainWindow):
         separator.setFrameShadow(QFrame.Sunken)
         control_layout.addWidget(separator)
 
-        # ─── 3. 状态显示 ───
+        # ─── 3. 检测精度选择（仅真实模式可用） ───
+        if not self.detector.is_placeholder:
+            precision_group = QVBoxLayout()
+            precision_label = QLabel("检测精度")
+            precision_label.setFont(QFont("Arial", 10, QFont.Bold))
+
+            self.precision_combo = QComboBox()
+            self.precision_combo.addItem("🌱 速度优先 (step=2.0)", 2.0)
+            self.precision_combo.addItem("🌿 平衡模式 (step=1.5)", 1.5)
+            self.precision_combo.addItem("🌳 精度优先 (step=1.0)", 1.0)
+            self.precision_combo.setCurrentIndex(1)  # 默认平衡模式
+            self.precision_combo.setStyleSheet("""
+                QComboBox {
+                    background-color: #1a1a3e;
+                    color: #e0e0e0;
+                    font-size: 13px;
+                    padding: 5px;
+                    border: 1px solid #2d2d5e;
+                    border-radius: 4px;
+                }
+                QComboBox::drop-down {
+                    border: none;
+                }
+                QComboBox QAbstractItemView {
+                    background-color: #1a1a3e;
+                    color: #e0e0e0;
+                    selection-background-color: #2d2d5e;
+                }
+            """)
+            self.precision_combo.currentIndexChanged.connect(self._on_precision_changed)
+
+            precision_group.addWidget(precision_label)
+            precision_group.addWidget(self.precision_combo)
+            control_layout.addLayout(precision_group)
+
+            # 分隔线
+            separator_precision = QFrame()
+            separator_precision.setFrameShape(QFrame.HLine)
+            separator_precision.setFrameShadow(QFrame.Sunken)
+            control_layout.addWidget(separator_precision)
+
+        # ─── 4. 状态显示 ───
         status_group = QVBoxLayout()
         status_title = QLabel("实时状态")
         status_title.setFont(QFont("Arial", 10, QFont.Bold))
@@ -317,6 +358,20 @@ class MainWindow(QMainWindow):
         """)
 
     # ─── 信号槽：参数变化 ───
+
+    def _on_precision_changed(self, index: int):
+        """
+        检测精度下拉框变化时的回调。
+
+        根据用户选择的精度模式，设置 VideoThread 的 step_delta：
+          - 速度优先 (step=2.0)：最快，但可能漏掉小框
+          - 平衡模式 (step=1.5)：速度与精度的折中（默认）
+          - 精度优先 (step=1.0)：最慢，但检测最全面
+        """
+        step_delta = self.precision_combo.currentData()
+        if self.video_thread is not None:
+            self.video_thread.step_delta = step_delta
+
 
     def _on_nms_changed(self, value: int):
         """
