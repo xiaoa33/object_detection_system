@@ -176,7 +176,7 @@ class MainWindow(QMainWindow):
         title_label.setStyleSheet(f"""
             QLabel {{
                 color: {TEXT_SECONDARY};
-                font-size: 11px;
+                font-size: 13px;
                 font-weight: 600;
                 letter-spacing: 3px;
                 padding: 0px;
@@ -218,7 +218,7 @@ class MainWindow(QMainWindow):
             precision_label.setStyleSheet(f"""
                 QLabel {{
                     color: {TEXT_SECONDARY};
-                    font-size: 10px;
+                    font-size: 12px;
                     font-weight: 600;
                     letter-spacing: 2px;
                 }}
@@ -279,7 +279,7 @@ class MainWindow(QMainWindow):
         status_title.setStyleSheet(f"""
             QLabel {{
                 color: {TEXT_SECONDARY};
-                font-size: 10px;
+                font-size: 12px;
                 font-weight: 600;
                 letter-spacing: 2px;
             }}
@@ -292,7 +292,7 @@ class MainWindow(QMainWindow):
         fps_dot.setStyleSheet(f"color: {STATUS_ON}; font-size: 8px;")
         fps_dot.setFixedWidth(16)
         fps_label = QLabel("帧率")
-        fps_label.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 11px;")
+        fps_label.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 13px;")
         self.fps_label = QLabel("0.0")
         self.fps_label.setStyleSheet(f"""
             QLabel {{
@@ -313,7 +313,7 @@ class MainWindow(QMainWindow):
         face_dot.setStyleSheet(f"color: {CLR_SECONDARY}; font-size: 8px;")
         face_dot.setFixedWidth(16)
         face_label = QLabel("检测人数")
-        face_label.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 11px;")
+        face_label.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 13px;")
         self.face_count_label = QLabel("0")
         self.face_count_label.setStyleSheet(f"""
             QLabel {{
@@ -333,7 +333,7 @@ class MainWindow(QMainWindow):
         self.resolution_label.setStyleSheet(f"""
             QLabel {{
                 color: {TEXT_SECONDARY};
-                font-size: 10px;
+                font-size: 12px;
                 font-weight: 400;
             }}
         """)
@@ -357,7 +357,7 @@ class MainWindow(QMainWindow):
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
                     stop:0 {CLR_PRIMARY}, stop:1 {CLR_ACCENT});
                 color: white;
-                font-size: 13px;
+                font-size: 15px;
                 font-weight: 700;
                 letter-spacing: 2px;
                 border: none;
@@ -388,7 +388,7 @@ class MainWindow(QMainWindow):
             QPushButton {{
                 background-color: transparent;
                 color: {TEXT_SECONDARY};
-                font-size: 11px;
+                font-size: 13px;
                 font-weight: 600;
                 letter-spacing: 2px;
                 border: 1px solid #d0d7de;
@@ -414,7 +414,7 @@ class MainWindow(QMainWindow):
         mode_label.setStyleSheet(f"""
             QLabel {{
                 color: {TEXT_SECONDARY};
-                font-size: 9px;
+                font-size: 11px;
                 font-weight: 400;
                 letter-spacing: 1px;
                 padding: 4px;
@@ -551,7 +551,7 @@ class MainWindow(QMainWindow):
         label.setStyleSheet(f"""
             QLabel {{
                 color: {TEXT_SECONDARY};
-                font-size: 10px;
+                font-size: 12px;
                 font-weight: 600;
                 letter-spacing: 2px;
             }}
@@ -564,7 +564,7 @@ class MainWindow(QMainWindow):
             suffix_label.setStyleSheet(f"""
                 QLabel {{
                     color: {TEXT_SECONDARY};
-                    font-size: 11px;
+                    font-size: 13px;
                     font-weight: 400;
                 }}
             """)
