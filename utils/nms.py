@@ -241,7 +241,6 @@ def nms_with_scores(boxes: List[Tuple[int, int, int, int]],
     return keep_boxes
 
 
-# ─── 便捷函数：合并检测框（均值漂移风格） ───
 # ══════════════════════════════════════════════════════════════════════════════
 # 模块二：原著 VJ2004 "多重检测合并"（均值合并）算法
 # 参考：Viola-Jones 2004, Section 5 - Integration of Multiple Detections
@@ -251,7 +250,7 @@ def nms_with_scores(boxes: List[Tuple[int, int, int, int]],
 class _UnionFind:
     """
     并查集（Disjoint Set Union / Union-Find）数据结构。
-    
+
     用于高效地将 N 个检测框划分为等价类（连通分量）。
     支持路径压缩（Path Compression）和按秩合并（Union by Rank）。
     """
@@ -280,33 +279,33 @@ class _UnionFind:
 
 def group_rectangles_original(
     rectangles: List[Tuple[int, int, int, int]],
-    eps: float = 0.35,
     group_threshold: int = 3
 ) -> List[Tuple[int, int, int, int]]:
     """
-    严格按照 Viola-Jones 2004 论文 Section 5 实现的均值合并算法。
+    基于 Viola-Jones 2004 论文 Section 5 数学思想重构的均值合并算法。
 
-    算法原理：
-        VJ 论文指出，检测器对同一张人脸会产生大量位置偏移和尺度变化的重叠框。
-        这些框构成空间上的连通图。算法分为三步：
-        
-        1. 等价关系判定（ε-邻域）：若两框的偏移量和尺寸差均不超过
-           ε · min(w1,w2)，则视为等价，在二者之间建立无向边。
-        2. 连通集划分（Union-Find）：将所有框划分为互不相交的连通子集。
-        3. 阈值过滤 + 均值合并：丢弃框数少于 group_threshold 的子集（噪声）；
-           对保留下来的子集，计算坐标/尺寸的算术平均值作为最终输出框。
+    ─── 算法流程（三步法）───
+
+    第 1 步 · 判定与归组（Partitioning）
+        使用基于【面积重叠】的等价判定标准，替代旧的 ε-邻域坐标差值判定。
+        计算两个框 R1 和 R2 的交集面积占其中"较小者面积"的比例（IoM）：
+            IoM = Intersection Area / min(Area1, Area2)
+        若 IoM > 0.4（表示重叠度较高），则判定两框属于同一组。
+
+    第 2 步 · 投票过滤（Vote Filtering）
+        若某组内的候选框数量小于 group_threshold，
+        则判定该组为孤立噪声，整组直接丢弃。
+
+    第 3 步 · 几何均值合并（Mean Merge）
+        对保留下来的组，计算组内所有框坐标与尺寸的算术平均值：
+            x_final = (1/N) Σ xi,  y_final = (1/N) Σ yi
+            w_final = (1/N) Σ wi,  h_final = (1/N) Σ hi
+        结果四舍五入取整。
 
     参数：
         rectangles     : 原始检测框列表 [(x, y, w, h), ...]
-        eps            : 邻域容差系数（默认 0.2）
-                         用于判定两个框是否等价的阈值：
-                           Δx ≤ eps · min(w1, w2)
-                           Δy ≤ eps · min(h1, h2)
-                           Δw ≤ eps · min(w1, w2)
-                           Δh ≤ eps · min(h1, h2)
-        group_threshold: 最小重叠框数过滤阈值（默认 3）
-                         若某连通子集中框的数量 < group_threshold，
-                         则判定该组为假阳性（噪声），整组丢弃。
+        group_threshold: 最小组内框数过滤阈值（默认 3）
+                         若某组内框的数量 < group_threshold，则判为噪声整组丢弃。
 
     返回：
         合并后的框列表 [(x, y, w, h), ...]
@@ -315,34 +314,46 @@ def group_rectangles_original(
     参考文献：
         Viola, Jones. "Robust Real-Time Face Detection" (2004)
         Section 5: Integration of Multiple Detections
-        Pages 10-11
     """
     if not rectangles:
         return []
 
     n = len(rectangles)
 
-    # ─── 步骤 1：构建并查集，根据 ε-邻域等价关系合并 ───
+    # ─── 步骤 1：计算交集面积（IoM）并归组 ───
+    # 预先计算出每个框的右下角坐标和面积，避免重复计算
+    x1s = [r[0] for r in rectangles]
+    y1s = [r[1] for r in rectangles]
+    x2s = [r[0] + r[2] for r in rectangles]
+    y2s = [r[1] + r[3] for r in rectangles]
+    areas = [r[2] * r[3] for r in rectangles]
+
     uf = _UnionFind(n)
 
     for i in range(n):
-        x1, y1, w1, h1 = rectangles[i]
         for j in range(i + 1, n):
-            x2, y2, w2, h2 = rectangles[j]
+            # 计算交集矩形
+            inter_left   = max(x1s[i], x1s[j])
+            inter_top    = max(y1s[i], y1s[j])
+            inter_right  = min(x2s[i], x2s[j])
+            inter_bottom = min(y2s[i], y2s[j])
 
-            # 计算四个维度的容差阈值
-            eps_w = eps * min(w1, w2)
-            eps_h = eps * min(h1, h2)
+            inter_w = max(0, inter_right - inter_left)
+            inter_h = max(0, inter_bottom - inter_top)
+            inter_area = inter_w * inter_h
 
-            # 判断等价条件：四个差值均 ≤ ε · min_dim
-            if (abs(x1 - x2) <= eps_w and
-                abs(y1 - y2) <= eps_h and
-                abs(w1 - w2) <= eps_w and
-                abs(h1 - h2) <= eps_h):
+            if inter_area == 0:
+                continue
+
+            # IoM = 交集面积 / 较小框的面积
+            min_area = min(areas[i], areas[j])
+            iom = inter_area / min_area
+
+            # 若 IoM > 0.4，则判定两框重叠，归为同组
+            if iom > 0.4:
                 uf.union(i, j)
 
-    # ─── 步骤 2：将并查集中的连通分量收集为子集 ───
-    # key = 集合代表元，value = 该集合中所有框的索引列表
+    # ─── 步骤 2：收集连通分支（投票统计） ───
     groups = {}
     for idx in range(n):
         root = uf.find(idx)
@@ -358,7 +369,7 @@ def group_rectangles_original(
         if len(indices) < group_threshold:
             continue
 
-        # 3b. 均值合并：对子集中所有框的坐标和尺寸取算术平均值
+        # 3b. 几何均值合并
         sum_x, sum_y, sum_w, sum_h = 0, 0, 0, 0
         for idx in indices:
             x, y, w, h = rectangles[idx]

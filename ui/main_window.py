@@ -269,75 +269,70 @@ class MainWindow(QMainWindow):
 
         control_layout.addWidget(self._make_divider())
 
-        # ─── 4. 检测精度（仅真实模式） ───
-        if not self.detector.is_placeholder:
-            precision_group = QVBoxLayout()
-            precision_group.setSpacing(8)
+        # ─── 4. 检测精度（VJ2004 步长因子） ───
+        precision_group = QVBoxLayout()
+        precision_group.setSpacing(8)
 
-            precision_header = QHBoxLayout()
-            precision_label = QLabel("检测精度")
-            precision_label.setStyleSheet(f"""
-                QLabel {{
-                    color: {TEXT_SECONDARY};
-                    font-size: 12px;
-                    font-weight: 600;
-                    letter-spacing: 2px;
-                }}
-            """)
-            precision_header.addWidget(precision_label)
-            precision_header.addStretch()
-            precision_group.addLayout(precision_header)
+        precision_header = QHBoxLayout()
+        precision_label = QLabel("检测精度")
+        precision_label.setStyleSheet(f"""
+            QLabel {{
+                color: {TEXT_SECONDARY};
+                font-size: 12px;
+                font-weight: 600;
+                letter-spacing: 2px;
+            }}
+        """)
+        precision_header.addWidget(precision_label)
+        precision_header.addStretch()
+        precision_group.addLayout(precision_header)
 
-            self.precision_combo = QComboBox()
-            # 原著 VJ2004 步长公式：step = max(1, round(scale * step_factor))
-            # 兼容性说明：旧版 step_delta 对应关系
-            #   旧版 step_delta=1.0 → 旧步长 = round(scale * 2.0) → step_factor = 2.0
-            #   旧版 step_delta=1.5 → 旧步长 = round(scale * 3.0) → step_factor = 3.0
-            #   旧版 step_delta=2.0 → 旧步长 = round(scale * 4.0) → step_factor = 4.0
-            self.precision_combo.addItem("🌳  精度优先 (Δ=2.0)", 2.0)
-            self.precision_combo.addItem("🌿  平衡模式 (Δ=3.0)", 3.0)
-            self.precision_combo.addItem("🌱  速度优先 (Δ=4.0)", 4.0)
-            self.precision_combo.setCurrentIndex(1)
-            self.precision_combo.setStyleSheet(f"""
-                QComboBox {{
-                    background-color: {BG_INPUT};
-                    color: {TEXT_PRIMARY};
-                    font-size: 12px;
-                    font-weight: 500;
-                    padding: 10px 14px;
-                    border: 1px solid #d0d7de;
-                    border-radius: 10px;
-                }}
-                QComboBox:hover {{
-                    border: 1px solid {CLR_PRIMARY};
-                }}
-                QComboBox::drop-down {{
-                    border: none;
-                    width: 30px;
-                }}
-                QComboBox::down-arrow {{
-                    image: none;
-                    border: none;
-                }}
-                QComboBox QAbstractItemView {{
-                    background-color: {BG_CARD};
-                    color: {TEXT_PRIMARY};
-                    font-size: 12px;
-                    selection-background-color: #e8f8f0;
-                    selection-color: {CLR_PRIMARY};
-                    border: 1px solid #d0d7de;
-                    border-radius: 8px;
-                    padding: 4px;
-                    outline: none;
-                }}
-            """)
-            self.precision_combo.currentIndexChanged.connect(self._on_precision_changed)
-            precision_group.addWidget(self.precision_combo)
-            control_layout.addLayout(precision_group)
+        self.precision_combo = QComboBox()
+        # 原著 VJ2004 步长公式：step = max(1, round(scale * step_factor))
+        self.precision_combo.addItem("🌳  精度优先 (Δ=2.0)", 2.0)
+        self.precision_combo.addItem("🌿  平衡模式 (Δ=3.0)", 3.0)
+        self.precision_combo.addItem("🌱  速度优先 (Δ=4.0)", 4.0)
+        self.precision_combo.setCurrentIndex(1)
+        self.precision_combo.setStyleSheet(f"""
+            QComboBox {{
+                background-color: {BG_INPUT};
+                color: {TEXT_PRIMARY};
+                font-size: 12px;
+                font-weight: 500;
+                padding: 10px 14px;
+                border: 1px solid #d0d7de;
+                border-radius: 10px;
+            }}
+            QComboBox:hover {{
+                border: 1px solid {CLR_PRIMARY};
+            }}
+            QComboBox::drop-down {{
+                border: none;
+                width: 30px;
+            }}
+            QComboBox::down-arrow {{
+                image: none;
+                border: none;
+            }}
+            QComboBox QAbstractItemView {{
+                background-color: {BG_CARD};
+                color: {TEXT_PRIMARY};
+                font-size: 12px;
+                selection-background-color: #e8f8f0;
+                selection-color: {CLR_PRIMARY};
+                border: 1px solid #d0d7de;
+                border-radius: 8px;
+                padding: 4px;
+                outline: none;
+            }}
+        """)
+        self.precision_combo.currentIndexChanged.connect(self._on_precision_changed)
+        precision_group.addWidget(self.precision_combo)
+        control_layout.addLayout(precision_group)
 
-            control_layout.addWidget(self._make_divider())
+        control_layout.addWidget(self._make_divider())
 
-        # ─── 4. 状态显示 ───
+        # ─── 5. 状态显示 ───
         status_group = QVBoxLayout()
         status_group.setSpacing(12)
 
@@ -472,21 +467,6 @@ class MainWindow(QMainWindow):
         button_group.addWidget(self.toggle_button)
         button_group.addWidget(self.exit_button)
         control_layout.addLayout(button_group)
-
-        # ─── 检测模式提示 ───
-        mode_text = "占位模式" if self.detector.is_placeholder else "Viola-Jones 真实模式"
-        mode_label = QLabel(f"● {mode_text}")
-        mode_label.setAlignment(Qt.AlignCenter)
-        mode_label.setStyleSheet(f"""
-            QLabel {{
-                color: {TEXT_SECONDARY};
-                font-size: 11px;
-                font-weight: 400;
-                letter-spacing: 1px;
-                padding: 4px;
-            }}
-        """)
-        control_layout.addWidget(mode_label)
 
         main_layout.addWidget(control_card, stretch=1)
 
