@@ -242,6 +242,142 @@ def nms_with_scores(boxes: List[Tuple[int, int, int, int]],
 
 
 # ─── 便捷函数：合并检测框（均值漂移风格） ───
+# ══════════════════════════════════════════════════════════════════════════════
+# 模块二：原著 VJ2004 "多重检测合并"（均值合并）算法
+# 参考：Viola-Jones 2004, Section 5 - Integration of Multiple Detections
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class _UnionFind:
+    """
+    并查集（Disjoint Set Union / Union-Find）数据结构。
+    
+    用于高效地将 N 个检测框划分为等价类（连通分量）。
+    支持路径压缩（Path Compression）和按秩合并（Union by Rank）。
+    """
+
+    def __init__(self, n: int):
+        self.parent = list(range(n))
+        self.rank = [0] * n
+
+    def find(self, x: int) -> int:
+        """查找 x 所属集合的代表元（带路径压缩）"""
+        if self.parent[x] != x:
+            self.parent[x] = self.find(self.parent[x])
+        return self.parent[x]
+
+    def union(self, x: int, y: int):
+        """合并 x 和 y 所属的两个集合（按秩合并）"""
+        px, py = self.find(x), self.find(y)
+        if px == py:
+            return
+        if self.rank[px] < self.rank[py]:
+            px, py = py, px
+        self.parent[py] = px
+        if self.rank[px] == self.rank[py]:
+            self.rank[px] += 1
+
+
+def group_rectangles_original(
+    rectangles: List[Tuple[int, int, int, int]],
+    eps: float = 0.35,
+    group_threshold: int = 3
+) -> List[Tuple[int, int, int, int]]:
+    """
+    严格按照 Viola-Jones 2004 论文 Section 5 实现的均值合并算法。
+
+    算法原理：
+        VJ 论文指出，检测器对同一张人脸会产生大量位置偏移和尺度变化的重叠框。
+        这些框构成空间上的连通图。算法分为三步：
+        
+        1. 等价关系判定（ε-邻域）：若两框的偏移量和尺寸差均不超过
+           ε · min(w1,w2)，则视为等价，在二者之间建立无向边。
+        2. 连通集划分（Union-Find）：将所有框划分为互不相交的连通子集。
+        3. 阈值过滤 + 均值合并：丢弃框数少于 group_threshold 的子集（噪声）；
+           对保留下来的子集，计算坐标/尺寸的算术平均值作为最终输出框。
+
+    参数：
+        rectangles     : 原始检测框列表 [(x, y, w, h), ...]
+        eps            : 邻域容差系数（默认 0.2）
+                         用于判定两个框是否等价的阈值：
+                           Δx ≤ eps · min(w1, w2)
+                           Δy ≤ eps · min(h1, h2)
+                           Δw ≤ eps · min(w1, w2)
+                           Δh ≤ eps · min(h1, h2)
+        group_threshold: 最小重叠框数过滤阈值（默认 3）
+                         若某连通子集中框的数量 < group_threshold，
+                         则判定该组为假阳性（噪声），整组丢弃。
+
+    返回：
+        合并后的框列表 [(x, y, w, h), ...]
+        与 nms() 保持相同的输入输出接口。
+
+    参考文献：
+        Viola, Jones. "Robust Real-Time Face Detection" (2004)
+        Section 5: Integration of Multiple Detections
+        Pages 10-11
+    """
+    if not rectangles:
+        return []
+
+    n = len(rectangles)
+
+    # ─── 步骤 1：构建并查集，根据 ε-邻域等价关系合并 ───
+    uf = _UnionFind(n)
+
+    for i in range(n):
+        x1, y1, w1, h1 = rectangles[i]
+        for j in range(i + 1, n):
+            x2, y2, w2, h2 = rectangles[j]
+
+            # 计算四个维度的容差阈值
+            eps_w = eps * min(w1, w2)
+            eps_h = eps * min(h1, h2)
+
+            # 判断等价条件：四个差值均 ≤ ε · min_dim
+            if (abs(x1 - x2) <= eps_w and
+                abs(y1 - y2) <= eps_h and
+                abs(w1 - w2) <= eps_w and
+                abs(h1 - h2) <= eps_h):
+                uf.union(i, j)
+
+    # ─── 步骤 2：将并查集中的连通分量收集为子集 ───
+    # key = 集合代表元，value = 该集合中所有框的索引列表
+    groups = {}
+    for idx in range(n):
+        root = uf.find(idx)
+        if root not in groups:
+            groups[root] = []
+        groups[root].append(idx)
+
+    # ─── 步骤 3：阈值过滤 + 均值合并 ───
+    merged_boxes = []
+
+    for root, indices in groups.items():
+        # 3a. 过滤：丢弃框数少于 group_threshold 的噪声子集
+        if len(indices) < group_threshold:
+            continue
+
+        # 3b. 均值合并：对子集中所有框的坐标和尺寸取算术平均值
+        sum_x, sum_y, sum_w, sum_h = 0, 0, 0, 0
+        for idx in indices:
+            x, y, w, h = rectangles[idx]
+            sum_x += x
+            sum_y += y
+            sum_w += w
+            sum_h += h
+
+        cnt = len(indices)
+        merged_boxes.append((
+            int(round(sum_x / cnt)),
+            int(round(sum_y / cnt)),
+            int(round(sum_w / cnt)),
+            int(round(sum_h / cnt)),
+        ))
+
+    return merged_boxes
+
+
 def merge_overlapping_boxes(boxes: List[Tuple[int, int, int, int]],
                             iou_threshold: float = 0.5) -> List[Tuple[int, int, int, int]]:
     """

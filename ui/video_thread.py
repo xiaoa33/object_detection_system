@@ -36,7 +36,7 @@ from PyQt5.QtGui import QImage
 
 # ─── 导入项目模块 ───
 from detect.detector import Detector
-from utils.nms import nms
+from utils.nms import nms, group_rectangles_original
 
 
 class VideoThread(QThread):
@@ -106,6 +106,18 @@ class VideoThread(QThread):
         #   2.0 = 速度优先（窗口疏，检测快）
         self._step_delta = 1.5
 
+        # ═══ 原著 VJ2004 步长因子 ═══
+        # 严格遵循论文 Section 4.1: step = max(1, round(scale * step_factor))
+        # 默认 3.0（等效于旧版 step_delta=1.5，保证性能不退化）
+        # 旧公式: step = round(scale * step_delta * 2)
+        # 新公式: step = round(scale * step_factor)
+        self._step_factor = 3.0
+
+        # ═══ 后处理算法模式 ═══
+        # 0 = 现代 IoU NMS（nms 函数）
+        # 1 = 原著均值合并（group_rectangles_original 函数）
+        self._nms_mode = 0
+
     # ─── 属性访问器（供 UI 调用） ───
 
     @property
@@ -161,6 +173,34 @@ class VideoThread(QThread):
         self._step_delta = max(1.0, min(2.0, value))
         # 同步到检测器
         self.detector.step_delta = self._step_delta
+
+    @property
+    def step_factor(self) -> float:
+        """获取原著 VJ2004 步长因子 Δ"""
+        return self._step_factor
+
+    @step_factor.setter
+    def step_factor(self, value: float):
+        """
+        设置原著 VJ2004 步长因子 Δ。
+        参数 value: 1.0（高精度）~ 5.0（高速度）
+        """
+        self._step_factor = max(0.5, min(5.0, value))
+        # 同步到检测器
+        self.detector.step_factor = self._step_factor
+
+    @property
+    def nms_mode(self) -> int:
+        """获取后处理算法模式：0=NMS, 1=原著均值合并"""
+        return self._nms_mode
+
+    @nms_mode.setter
+    def nms_mode(self, value: int):
+        """
+        设置后处理算法模式。
+        参数 value: 0 = 现代 IoU NMS, 1 = 原著均值合并
+        """
+        self._nms_mode = 1 if value == 1 else 0
 
     # ─── 线程控制 ───
 

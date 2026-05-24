@@ -208,7 +208,68 @@ class MainWindow(QMainWindow):
         # ─── 分隔线 ───
         control_layout.addWidget(self._make_divider())
 
-        # ─── 3. 检测精度（仅真实模式） ───
+        # ─── 3. 后处理算法选择（NMS 模式） ───
+        nms_group = QVBoxLayout()
+        nms_group.setSpacing(8)
+
+        nms_header = QHBoxLayout()
+        nms_label = QLabel("后处理算法")
+        nms_label.setStyleSheet(f"""
+            QLabel {{
+                color: {TEXT_SECONDARY};
+                font-size: 12px;
+                font-weight: 600;
+                letter-spacing: 2px;
+            }}
+        """)
+        nms_header.addWidget(nms_label)
+        nms_header.addStretch()
+        nms_group.addLayout(nms_header)
+
+        self.combo_nms_mode = QComboBox()
+        self.combo_nms_mode.addItem(" 现代 IoU NMS", 0)
+        self.combo_nms_mode.addItem(" 原著均值合并", 1)
+        self.combo_nms_mode.setCurrentIndex(0)
+        self.combo_nms_mode.setStyleSheet(f"""
+            QComboBox {{
+                background-color: {BG_INPUT};
+                color: {TEXT_PRIMARY};
+                font-size: 12px;
+                font-weight: 500;
+                padding: 10px 14px;
+                border: 1px solid #d0d7de;
+                border-radius: 10px;
+            }}
+            QComboBox:hover {{
+                border: 1px solid {CLR_PRIMARY};
+            }}
+            QComboBox::drop-down {{
+                border: none;
+                width: 30px;
+            }}
+            QComboBox::down-arrow {{
+                image: none;
+                border: none;
+            }}
+            QComboBox QAbstractItemView {{
+                background-color: {BG_CARD};
+                color: {TEXT_PRIMARY};
+                font-size: 12px;
+                selection-background-color: #e8f8f0;
+                selection-color: {CLR_PRIMARY};
+                border: 1px solid #d0d7de;
+                border-radius: 8px;
+                padding: 4px;
+                outline: none;
+            }}
+        """)
+        self.combo_nms_mode.currentIndexChanged.connect(self._on_nms_mode_changed)
+        nms_group.addWidget(self.combo_nms_mode)
+        control_layout.addLayout(nms_group)
+
+        control_layout.addWidget(self._make_divider())
+
+        # ─── 4. 检测精度（仅真实模式） ───
         if not self.detector.is_placeholder:
             precision_group = QVBoxLayout()
             precision_group.setSpacing(8)
@@ -228,9 +289,14 @@ class MainWindow(QMainWindow):
             precision_group.addLayout(precision_header)
 
             self.precision_combo = QComboBox()
-            self.precision_combo.addItem("🌱  速度优先 (step=2.0)", 2.0)
-            self.precision_combo.addItem("🌿  平衡模式 (step=1.5)", 1.5)
-            self.precision_combo.addItem("🌳  精度优先 (step=1.0)", 1.0)
+            # 原著 VJ2004 步长公式：step = max(1, round(scale * step_factor))
+            # 兼容性说明：旧版 step_delta 对应关系
+            #   旧版 step_delta=1.0 → 旧步长 = round(scale * 2.0) → step_factor = 2.0
+            #   旧版 step_delta=1.5 → 旧步长 = round(scale * 3.0) → step_factor = 3.0
+            #   旧版 step_delta=2.0 → 旧步长 = round(scale * 4.0) → step_factor = 4.0
+            self.precision_combo.addItem("🌳  精度优先 (Δ=2.0)", 2.0)
+            self.precision_combo.addItem("🌿  平衡模式 (Δ=3.0)", 3.0)
+            self.precision_combo.addItem("🌱  速度优先 (Δ=4.0)", 4.0)
             self.precision_combo.setCurrentIndex(1)
             self.precision_combo.setStyleSheet(f"""
                 QComboBox {{
@@ -578,11 +644,22 @@ class MainWindow(QMainWindow):
     # 信号槽：参数变化
     # ═══════════════════════════════════════════════════════
 
+    def _on_nms_mode_changed(self, index: int):
+        """后处理算法下拉框变化回调"""
+        nms_mode = self.combo_nms_mode.currentData()
+        # 同步到检测器（Detector.detect 内部使用 nms_mode 选择算法）
+        self.detector.nms_mode = nms_mode
+        if self.video_thread is not None:
+            self.video_thread.nms_mode = nms_mode
+        mode_name = "现代 IoU NMS" if nms_mode == 0 else "原著均值合并"
+        print(f"[MainWindow] 后处理算法切换为: {mode_name}")
+
     def _on_precision_changed(self, index: int):
         """检测精度下拉框变化回调"""
-        step_delta = self.precision_combo.currentData()
+        # 原著 VJ2004 步长因子 Δ
+        step_factor = self.precision_combo.currentData()
         if self.video_thread is not None:
-            self.video_thread.step_delta = step_delta
+            self.video_thread.step_factor = step_factor
 
     def _on_nms_changed(self, value: int):
         """NMS 阈值滑动条变化回调"""

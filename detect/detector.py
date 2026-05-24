@@ -45,7 +45,7 @@ except (ImportError, ModuleNotFoundError):
 # ─── 导入 NMS 模块 ───
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from utils.nms import nms
+from utils.nms import nms, group_rectangles_original
 
 
 class Detector:
@@ -63,6 +63,7 @@ class Detector:
                  model_path: str = "models/cascade_model.pkl",
                  scale_factor: float = 1.25,
                  step_delta: float = 1.5,
+                 step_factor: float = None,
                  min_face_size: int = 40,
                  max_face_size: int = 500,
                  use_placeholder: bool = None):
@@ -72,7 +73,11 @@ class Detector:
         参数：
             model_path     : 成员 B 训练好的级联模型路径（.pkl 文件）
             scale_factor   : 图像金字塔缩放因子（越大越快，但可能漏检）
-            step_delta     : 滑动窗口步长系数（1.0=偏精度，1.5=偏速度）
+            step_delta     : [已弃用] 旧版步长系数，保留仅用于兼容性
+            step_factor    : 原著 VJ2004 步长因子 Δ
+                             步长 = max(1, round(scale * step_factor))
+                             默认 3.0（与旧版 step_delta=1.5 性能完全一致）
+                             1.5 = 高精度（偏慢），3.0 = 平衡（默认），4.5 = 高速度（偏快）
             min_face_size  : 最小人脸尺寸（像素）
             max_face_size  : 最大人脸尺寸（像素）
             use_placeholder: 是否强制使用占位模式
@@ -82,8 +87,19 @@ class Detector:
         """
         self.scale_factor = scale_factor
         self.step_delta = step_delta
+        # ─── 兼容性说明 ───
+        # 旧版公式: step = max(1, round(scale * step_delta * 2))
+        # 新版公式: step = max(1, round(scale * step_factor))
+        # 旧版默认 step_delta=1.5 → 步长 = round(scale * 3.0)
+        # 因此 step_factor=3.0 与旧版默认行为完全一致，保证性能不退化
+        self.step_factor = 3.0 if step_factor is None else step_factor
         self.min_face_size = min_face_size
         self.max_face_size = max_face_size
+
+        # ═══ 后处理算法模式 ═══
+        # 0 = 现代 IoU NMS（nms 函数）
+        # 1 = 原著均值合并（group_rectangles_original 函数）
+        self._nms_mode = 0
 
         # ─── 判断使用哪种模式 ───
         if use_placeholder is None:
@@ -120,6 +136,48 @@ class Detector:
     def is_placeholder(self) -> bool:
         """当前是否处于占位模式"""
         return self._is_placeholder
+
+    @property
+    def nms_mode(self) -> int:
+        """获取后处理算法模式：0=现代 IoU NMS, 1=原著均值合并"""
+        return self._nms_mode
+
+    @nms_mode.setter
+    def nms_mode(self, value: int):
+        """
+        设置后处理算法模式。
+        参数 value: 0 = 现代 IoU NMS, 1 = 原著均值合并
+        """
+        self._nms_mode = 1 if value == 1 else 0
+
+    def _post_process(self, candidates: List[Tuple[int, int, int, int]],
+                      iou_threshold: float = 0.3,
+                      min_votes: int = 3) -> List[Tuple[int, int, int, int]]:
+        """
+        统一后处理入口：根据 nms_mode 选择算法。
+
+        参数：
+            candidates   : 候选框列表 [(x, y, w, h), ...]
+            iou_threshold: NMS 的 IoU 阈值（仅现代 NMS 使用）
+            min_votes    : 最小票数（仅现代 NMS 使用）
+
+        返回：
+            过滤合并后的框列表
+        """
+        if not candidates:
+            return []
+
+        if self._nms_mode == 1:
+            # ═══ 原著均值合并算法 ═══
+            # 使用 group_threshold=min_votes 作为连通分支过滤阈值
+            return group_rectangles_original(
+                candidates,
+                eps=0.2,
+                group_threshold=min_votes
+            )
+        else:
+            # ═══ 现代 IoU NMS ═══
+            return nms(candidates, iou_threshold=iou_threshold, min_votes=min_votes)
 
     def detect(self, img_bgr: np.ndarray,
                iou_threshold: float = 0.3,
@@ -190,11 +248,11 @@ class Detector:
         if boxes is not None and len(boxes) > 0:
             candidates = [(int(x), int(y), int(w), int(h)) for (x, y, w, h) in boxes]
 
-        # ─── NMS 后处理 ───
+        # ─── 统一后处理（支持双算法切换） ───
         # 占位模式：OpenCV 的 detectMultiScale 已经做了内部 NMS，
         # 返回的框数量通常很少（1~3个），不需要投票过滤。
         # 使用 min_votes=1 只做合并（取重叠框的平均值），不做投票过滤。
-        return nms(candidates, iou_threshold=iou_threshold, min_votes=1)
+        return self._post_process(candidates, iou_threshold=iou_threshold, min_votes=1)
 
     def _detect_real(self, gray: np.ndarray,
                      iou_threshold: float = 0.3,
@@ -233,8 +291,11 @@ class Detector:
         for scale in scales:
             win_size_px = int(round(BASE_WIN_SIZE * scale))
 
-            # 动态步长：随尺度放大而增大，加速大尺度检测
-            step = max(1, int(round(scale * self.step_delta * 2)))
+            # ═══ 原著 VJ2004 步长公式（Section 4.1）═══
+            # 论文原文： "If the current scale is s, the window is shifted by [sΔ]"
+            # 其中 Δ = step_factor（默认 1.0）
+            # 步长随着检测框变大而等比例变大，避免大尺度下的冗余扫描
+            step = max(1, int(round(scale * self.step_factor)))
 
             # 步骤 4：滑动窗口遍历
             for r in range(0, H - win_size_px + 1, step):
@@ -268,9 +329,9 @@ class Detector:
                     if is_face:
                         candidates.append((c, r, win_size_px, win_size_px))
 
-        # ─── NMS 后处理（成员 B 添加） ───
+        # ─── 统一后处理（支持双算法切换） ───
         # min_votes=3 表示同一位置至少被3个不同尺度/位移的窗口命中，才输出最终结果
-        final_faces = nms(candidates, iou_threshold=iou_threshold, min_votes=min_votes)
+        final_faces = self._post_process(candidates, iou_threshold=iou_threshold, min_votes=min_votes)
 
         return final_faces
 
