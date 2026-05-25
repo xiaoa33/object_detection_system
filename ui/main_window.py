@@ -239,7 +239,7 @@ class MainWindow(QMainWindow):
         control_layout.addLayout(self._build_slider_group(
             label_text="最少重叠票数",
             value_label=self._min_votes_value_label,
-            slider=self._make_slider(1, 300, 45, self._on_min_votes_changed),
+            slider=self._make_slider(2, 3000, 45, self._on_min_votes_changed),
             suffix=""
         ))
 
