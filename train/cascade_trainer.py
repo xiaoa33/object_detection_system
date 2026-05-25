@@ -1,29 +1,7 @@
 """
 cascade_trainer.py
 ==================
-级联分类器训练与 Hard Negative Mining (HNM) 模块
-
-核心设计：
-  训练集正样本：全程固定不变（特征矩阵由 data_loader 预处理好后传入）
-  训练集负样本：
-    - 第一层：由 train_cascade.py 从训练大图随机裁取10000个子窗口传入
-    - 后续层：本模块执行 HNM，扫描训练大图，收集误检子窗口（最多6000个）
-  验证集正样本：全程固定不变（特征矩阵预计算好直接查表）
-  验证集负样本：【改动】全程固定不变，由 train_cascade.py 一次性从验证大图随机裁取
-                1000 个子窗口（每张大图取1个），计算特征矩阵后传入，整个训练过程不变。
-                旧版：每轮从大图重采样，导致评估标准不一致，阈值调整逻辑不稳定。
-                新版：验证集负样本固定，与正样本一起构成稳定的评估尺子。
-
-  所有负样本大图均为彩色图：
-    读入后立即整张转灰度 → 裁子窗口 → 方差归一化
-    （先转灰度再裁，等价于先裁再转，但整张转一次效率更高）
-
-  关于负样本大图的打乱顺序：
-    - 第一层随机裁取：_collect_patches_from_dir 内部调用 np.random.shuffle(files)，
-      每次运行都会随机打乱图像列表顺序，不会固定从同一张图开始。
-    - HNM 扫描：同样调用 _collect_patches_from_dir(mode='scan')，
-      每次 HNM 也会重新打乱图像顺序，每层扫描的起始图像都不同。
-    因此两种操作都不需要担心"总是从第一张图开始"的问题。
+级联分类器训练与 Hard Negative Mining (HNM) 模块（支持多分支交互决策与低冗余输出）
 """
 
 import os
@@ -44,17 +22,12 @@ from train.haar_features import compute_all_features, compute_feature_at_scale
 
 def _variance_normalize_patch(patch: np.ndarray):
     """
-    对单个 24×24 灰度 patch 做均值/方差归一化（论文 Section 5.4）。
-
-    论文公式：σ² = E[x²] − (E[x])²，归一化：x_norm = (x − mean) / σ
-
-    返回：
-        归一化后的 float32 数组；若方差 < 1（纯色块）则返回 None 表示跳过。
+    对单个 24×24 灰度 patch 做均值/方差归一化。
     """
     mean = np.mean(patch, dtype=np.float64)
     var  = np.mean(patch.astype(np.float64) ** 2) - mean ** 2
-    if var < 1.0:
-        return None          # 方差过小，纯色块，无判别价值
+    if var < 1e-4:
+        return None        # 方差过小，无判别价值，直接跳过
     sigma = np.sqrt(var)
     return (patch.astype(np.float32) - mean) / sigma
 
@@ -69,32 +42,7 @@ def _collect_patches_from_dir(
     one_per_image: bool = False,
 ) -> List[np.ndarray]:
     """
-    从 image_dir 下的彩色大图中采集归一化后的 24×24 灰度 patch。
-
-    参数：
-        image_dir          : 彩色大图所在目录（jpg/png/jpeg/bmp）
-        n_samples          : 目标采集数量
-        win_size           : 子窗口大小，固定 24
-        step               : 滑动步长，mode='scan' 时生效（推荐 4）
-        mode               : 'random' — 随机位置采样（第一层负样本）
-                             'scan'   — 滑动扫描+级联过滤（HNM）
-        cascade_classifier : mode='scan' 时必须传入；接受归一化 patch，返回 bool
-        one_per_image      : 【新增】True 时每张图只取一个 patch，用于验证集负样本
-                             （正好有1000张大图，每张取1个，共1000个，均匀覆盖所有大图）
-
-    处理流程（适用两种 mode）：
-        1. 读彩色大图（IMREAD_COLOR）
-        2. 整张转灰度（cvtColor BGR2GRAY）—— 只转一次，效率最高
-           大图先整张转灰度再切子窗口，与先切子窗口再转灰度等价（逐像素线性变换）
-        3. 裁取 24×24 子窗口
-        4. 方差归一化（σ² < 1 则跳过）
-        5. mode='scan' 时额外送入当前级联判断，通过才收录
-
-    注意：
-        - 每次调用都会 np.random.shuffle(files)，打乱图像顺序，
-          不会固定从同一张图开始，HNM 每层都能覆盖不同的图像区域。
-
-    返回：已做灰度转换 + 方差归一化的 float32 数组列表，每个形状 (24, 24)
+    从指定彩色大图中采集灰度归一化 patch。
     """
     exts  = ('.jpg', '.jpeg', '.png', '.bmp')
     files = [
@@ -103,11 +51,9 @@ def _collect_patches_from_dir(
         if f.lower().endswith(exts)
     ]
     if not files:
-        print(f"  [采样] ⚠ 目录 {image_dir} 中未找到图片！")
+        print(f"  [采样] [WARN] 目录 {image_dir} 中未找到图片！")
         return []
 
-    # 每次调用都打乱图像列表，避免每次都从同一张图开始
-    # 第一层随机裁取和 HNM 扫描都依赖这里的打乱
     np.random.shuffle(files)
     patches = []
 
@@ -115,14 +61,11 @@ def _collect_patches_from_dir(
         if len(patches) >= n_samples:
             break
 
-        # 读彩色图
         img_bgr = cv2.imread(img_path, cv2.IMREAD_COLOR)
         if img_bgr is None:
             print(f"  [采样] 无法读取: {img_path}，跳过。")
             continue
 
-        # 整张图转灰度（一次转换，效率最高）
-        # 大图先整张转灰度 与 切子窗口后再转灰度 结果完全等价（RGB→Gray 是逐像素线性运算）
         img_gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
         h, w = img_gray.shape
         if h < win_size or w < win_size:
@@ -130,19 +73,15 @@ def _collect_patches_from_dir(
 
         if mode == 'random':
             if one_per_image:
-                # ── 每张图只取一个随机位置（用于验证集负样本）──
-                # 正好有1000张大图，每张取1个，均匀覆盖所有大图，共1000个
                 max_per_img = 1
             else:
-                # ── 普通随机采样（第一层训练负样本）──────────
-                # 每张图最多采 max_per_img 个，防止全部样本来自同一张图
                 max_per_img = max(1, n_samples // max(1, len(files) // 2))
 
             count_this = 0
             rows       = np.arange(0, h - win_size + 1)
             cols       = np.arange(0, w - win_size + 1)
             positions  = [(r, c) for r in rows for c in cols]
-            np.random.shuffle(positions)  # 随机打乱位置，随机采样
+            np.random.shuffle(positions)
 
             for (r, c) in positions:
                 if len(patches) >= n_samples or count_this >= max_per_img:
@@ -154,9 +93,6 @@ def _collect_patches_from_dir(
                 count_this += 1
 
         elif mode == 'scan':
-            # ── 滑动窗口扫描（HNM）─────────────────────────
-            # 步长=step，通过当前级联（误判为人脸）才收录
-            # 收够 n_samples 立即停止，不需要扫完所有图
             for r in range(0, h - win_size + 1, step):
                 if len(patches) >= n_samples:
                     break
@@ -181,22 +117,17 @@ def _patches_to_feature_matrix(
 ) -> np.ndarray:
     """
     将归一化 patch 列表批量转为 Haar 特征矩阵。
-    流程：构建积分图 → 批量计算约 16 万个特征
-    返回：形状 (N, D) 的 float32 特征矩阵
     """
     if len(patches) == 0:
         return np.empty((0, len(features_desc)), dtype=np.float32)
-    iimgs = build_batch(patches)
+    patches_arr = np.array(patches, dtype=np.float32)
+    iimgs = build_batch(patches_arr)
     return compute_all_features(iimgs, features_desc, scale=1.0).astype(np.float32)
 
 
 def _next_n_features(n: int, max_n: int) -> int:
     """
-    分段加速策略：决定下一轮尝试的特征数。
-      n < 10  : 翻倍
-      10≤n<30 : +50%
-      30≤n<100: +25（论文后期策略）
-      n≥100   : +50
+    分段自适应决定下一轮尝试的特征数量。
     """
     if n < 10:
         nxt = n * 2
@@ -215,67 +146,56 @@ def _next_n_features(n: int, max_n: int) -> int:
 
 class CascadeTrainer:
     """
-    按照 Viola-Jones 论文 Table 2 训练级联分类器。
-
-    每轮循环：
-      1. AdaBoost 训练强分类器
-      2. 直接在验证集（固定正+固定负）上评估累积 TPR/FPR
-         若 TPR 不足则降低阈值（去掉旧版训练集粗调步骤）
-      3. 若 FPR 仍未达标，增加特征数重训（分段加速）
-      4. 本层达标后执行 HNM，收集训练大图误检作为下一层负样本
+    依据 Viola-Jones 设计训练级联分类器的核心管理器。
     """
 
     def __init__(
         self,
-        X_pos_train: np.ndarray,        # 训练正样本特征矩阵 (N_pos, D)，全程不变
-        y_pos_train: np.ndarray,        # 全 1
-        X_neg_train: np.ndarray,        # 第一层训练负样本特征矩阵 (N_neg, D)
-        y_neg_train: np.ndarray,        # 全 0
-        X_val_pos: np.ndarray,          # 验证正样本特征矩阵 (N_val_pos, D)，全程不变
-        y_val_pos: np.ndarray,          # 全 1，全程不变
-        X_val_neg: np.ndarray,          # 【改动】验证负样本特征矩阵 (N_val_neg, D)，全程不变
-        y_val_neg: np.ndarray,          # 【改动】全 0，全程不变
-        train_neg_image_dir: str,       # 训练集负样本大图目录（HNM 扫描用）
-        features_desc: list,            # Haar 特征描述符列表
-        target_fpr: float = 1e-5,       # 目标整体 FPR
-        layer_max_fpr: float = 0.50,    # 单层最大 FPR
-        layer_min_dr: float = 0.99,     # 单层最低 DR
+        X_pos_train: np.ndarray,        # 训练正样本特征
+        y_pos_train: np.ndarray,
+        X_neg_train: np.ndarray,        # 第一层训练负样本特征
+        y_neg_train: np.ndarray,
+        X_val_pos: np.ndarray,          # 验证正样本特征
+        y_val_pos: np.ndarray,
+        X_val_neg: np.ndarray,          # 验证负样本特征（固定特征传入）
+        y_val_neg: np.ndarray,
+        train_neg_image_dir: str,       # 训练负样本大图目录
+        features_desc: list,
+        target_fpr: float = 1e-5,
+        layer_max_fpr: float = 0.50,
+        layer_min_dr: float = 0.99,
         max_features_per_stage: int = 200,
-        hnm_step: int = 4,              # HNM 滑动步长
-        checkpoint_path: str = "../models/cascade_checkpoint.pkl",
+        hnm_step: int = 4,
+        checkpoint_path: str = "models/cascade_checkpoint.pkl",
         resume_state: dict = None,
+        non_interactive: bool = True,   # 非交互模式：自动选择"继续增加特征"，跳过 input()
     ):
-        # 固定训练正样本
         self.X_pos = X_pos_train
         self.y_pos = y_pos_train
 
-        # 固定验证集（正负样本均在训练开始前一次性准备好，全程不变）
-        # 【改动】旧版：验证负样本每轮从大图重采样（val_neg_image_dir + val_neg_per_round）
-        # 新版：验证负样本作为固定矩阵传入，不再需要大图目录和每轮采样逻辑
         self.X_val_pos = X_val_pos
         self.y_val_pos = y_val_pos
         self.X_val_neg = X_val_neg
         self.y_val_neg = y_val_neg
 
-        # 预先拼好固定验证集，避免每次评估时重复拼接
+        # 组合构建全程固定的验证集
         self.X_val = np.vstack([X_val_pos, X_val_neg])
         self.y_val = np.hstack([y_val_pos, y_val_neg])
         print(f"[CascadeTrainer] 验证集：正 {len(X_val_pos)} + 负 {len(X_val_neg)} "
-              f"= {len(self.X_val)} 个样本（全程固定）")
+              f"= {len(self.X_val)} 个样本（全程固定评估）")
 
-        # 目录路径
         self.train_neg_image_dir = train_neg_image_dir
         self.features_desc       = features_desc
 
-        # 超参数
         self.F_target               = target_fpr
         self.f_target               = layer_max_fpr
         self.d_target               = layer_min_dr
         self.max_features_per_stage = max_features_per_stage
         self.hnm_step               = hnm_step
         self.checkpoint_path        = checkpoint_path
+        self.non_interactive        = non_interactive
 
-        # 断点恢复 / 初始化
+        # 断点加载
         if resume_state is not None:
             print("[Checkpoint] 检测到断点，正在恢复...")
             self.stages          = resume_state['stages']
@@ -284,32 +204,18 @@ class CascadeTrainer:
             self.overall_tpr     = resume_state.get('overall_tpr', 1.0)
             self.X_neg           = resume_state['X_neg']
             self.y_neg           = np.zeros(len(self.X_neg), dtype=np.int32)
-            print(f"  -> 从第 {self.start_layer_idx + 1} 层继续。"
-                  f"当前整体 FPR={self.overall_fpr:.2e}，TPR={self.overall_tpr:.4f}")
+            print(f"  -> 从第 {self.start_layer_idx + 1} 层继续。累计 FPR={self.overall_fpr:.2e}")
         else:
             self.stages: List[StrongClassifier] = []
             self.start_layer_idx = 0
             self.overall_fpr     = 1.0
             self.overall_tpr     = 1.0
-            self.X_neg           = X_neg_train   # 第一层使用外部传入的随机裁取负样本
+            self.X_neg           = X_neg_train
             self.y_neg           = y_neg_train
 
-    # ─────────────────────────────────────────────────────────
-    #  验证集评估
-    # ─────────────────────────────────────────────────────────
-
-    def _evaluate_cascade(self, current_stage: StrongClassifier) -> Tuple[float, float]:
+    def _evaluate_cascade(self, current_stage: StrongClassifier, verbose: bool = True) -> Tuple[float, float]:
         """
-        评估「已有层 + 本层」在验证集上的累积 TPR 和 FPR。
-
-        【改动】旧版接受 X_val_neg / y_val_neg 参数（每轮传入不同的随机采样结果）。
-        新版直接使用 self.X_val / self.y_val（训练开始前固定好的验证集），
-        不再需要参数传入，逻辑更清晰，评估标准全程一致。
-
-        逻辑：
-          - 所有样本初始视为通过（pred=1）
-          - 依次经过每一层：被拒绝则 pred=0，后续不再处理
-          - 最终统计 TP/FP，计算累积 TPR/FPR
+        评估已有级联层级对固定验证集的整体表现。
         """
         all_stages = self.stages + [current_stage]
         preds      = np.ones(len(self.X_val), dtype=np.int32)
@@ -332,40 +238,28 @@ class CascadeTrainer:
         tpr = tp / n_pos if n_pos > 0 else 0.0
         fpr = fp / n_neg if n_neg > 0 else 0.0
 
-        print(f"    [验证集] 累积 TPR={tpr*100:.2f}% ({tp}/{n_pos})，"
-              f"FPR={fpr*100:.4f}% ({fp}/{n_neg})")
+        if verbose:
+            print(f"    [验证集] 累积 TPR={tpr*100:.2f}% ({tp}/{n_pos})，"
+                  f"FPR={fpr*100:.4f}% ({fp}/{n_neg})")
         return tpr, fpr
 
-    # ─────────────────────────────────────────────────────────
-    #  断点存档
-    # ─────────────────────────────────────────────────────────
-
     def _save_checkpoint(self, layer_idx: int, overall_fpr: float) -> None:
-        """序列化当前训练进度（含 HNM 结果），支持中断后继续。"""
+        """保存当前阶段的中间进度（用于断点继续）"""
         os.makedirs(os.path.dirname(self.checkpoint_path), exist_ok=True)
         state = {
             'stages':      self.stages,
             'layer_idx':   layer_idx,
             'overall_fpr': overall_fpr,
             'overall_tpr': self.overall_tpr,
-            'X_neg':       self.X_neg,   # 本轮 HNM 结果，恢复后直接用于下一层
+            'X_neg':       self.X_neg,
         }
         with open(self.checkpoint_path, 'wb') as f:
             pickle.dump(state, f)
         print(f"[Checkpoint] 第 {layer_idx} 层进度已保存: {self.checkpoint_path}")
 
-    # ─────────────────────────────────────────────────────────
-    #  主训练循环
-    # ─────────────────────────────────────────────────────────
-
     def train(self) -> List[StrongClassifier]:
         """
-        级联训练主循环（论文 Table 2）。
-
-        改动说明：
-          1. 去掉旧版 Step A（每层从大图重采样验证负样本），验证集全程固定。
-          2. _evaluate_cascade 不再需要传入 X_val_neg / y_val_neg 参数。
-          3. 所有阈值调整均以固定验证集为标准，评估稳定一致。
+        主循环训练逻辑。
         """
         overall_fpr = self.overall_fpr
         layer_idx   = self.start_layer_idx
@@ -375,137 +269,204 @@ class CascadeTrainer:
         print(f"  目标整体 FPR    : {self.F_target:.2e}")
         print(f"  单层最大 FPR    : {self.f_target:.2f}")
         print(f"  单层最低 DR     : {self.d_target:.4f}")
-        print(f"  单层特征上限    : {self.max_features_per_stage}")
-        print(f"  HNM 步长        : {self.hnm_step}")
-        print(f"  验证集          : 正 {np.sum(self.y_val==1)} + 负 {np.sum(self.y_val==0)}，全程固定")
+        print(f"  验证集大小      : 正 {np.sum(self.y_val==1)} + 负 {np.sum(self.y_val==0)}（固定）")
+        print(f"  交互模式        : {'关闭（自动继续）' if self.non_interactive else '开启（手动选择）'}")
         print(f"{'='*60}")
 
         while overall_fpr > self.F_target:
             layer_idx += 1
             print(f"\n[Cascade] ========== 第 {layer_idx} 层 ==========")
 
-            # ── A：确定本层起始特征数 ─────────────────────────
-            # 第1层从2开始；后续层从前一层特征数的一半开始（跳过无效小值区间）
             if self.stages:
                 prev_n     = len(self.stages[-1].weak_classifiers)
                 n_features = max(2, prev_n)
-                print(f"  [A] 前一层 {prev_n} 个特征，本层起点 {n_features} 个。")
+                print(f"  [A] 前一层共 {prev_n} 个特征，本层初始候选特征数: {n_features}")
             else:
                 n_features = 2
-                print(f"  [A] 第一层，从 {n_features} 个特征开始。")
+                print(f"  [A] 级联起始第一层，从 {n_features} 个特征开始...")
 
-            # ── B：组合本层训练集 ─────────────────────────────
-            # 正样本全程固定；负样本：第1层为随机裁取的10000个，后续层为上轮 HNM 结果
             X_train = np.vstack([self.X_pos, self.X_neg])
             y_train = np.hstack([self.y_pos, self.y_neg])
-            print(f"  [B] 训练集：正 {len(self.X_pos)} + 负 {len(self.X_neg)} "
-                  f"= {len(X_train)} 个样本")
+            print(f"  [B] 本层训练集: 正 {len(self.X_pos)} + 负 {len(self.X_neg)} = {len(X_train)} 个样本")
 
-            # 本层需要满足的累积指标目标
-            target_tpr = self.d_target * self.overall_tpr   # 累积 TPR 下限
-            target_fpr = self.f_target * overall_fpr         # 累积 FPR 上限
-            print(f"  [B] 目标：累积 TPR ≥ {target_tpr*100:.2f}%，"
-                  f"累积 FPR ≤ {target_fpr*100:.4f}%")
+            target_tpr = self.d_target * self.overall_tpr
+            target_fpr = self.f_target * overall_fpr
+            print(f"  [B] 预期目标: 累积 TPR ≥ {target_tpr*100:.2f}%, 累积 FPR ≤ {target_fpr*100:.4f}%")
 
-            best_model  = None
-            cascade_tpr = 0.0
-            cascade_fpr = 1.0
+            # 用于保存本层每次特征增加时的尝试历史
+            stage_history = []  # 元素格式为 dict: {'model': stage_model, 'fpr': fpr, 'tpr': tpr, 'n_features': n_features}
+            best_model = None
 
-            # ── C：内层循环，逐步增加特征数直到 FPR 达标 ────
             while True:
-                print(f"\n  [C] 训练 {n_features} 个弱分类器...")
+                print(f"\n  [C] 尝试训练含有 {n_features} 个弱分类器的强分类器...")
                 t0 = time.time()
 
-                # C1：AdaBoost 训练强分类器
                 stage_model = train_adaboost(
                     X_train, y_train,
                     n_features_to_select=n_features,
                     verbose=False,
                 )
-                print(f"    AdaBoost 完成，耗时 {time.time()-t0:.1f}s")
+                print(f"    AdaBoost 迭代计算完成，耗时 {time.time()-t0:.1f}s")
 
-                # C2：直接在固定验证集上评估累积 TPR/FPR
-                # 【改动】旧版需要传入本轮随机采样的 X_val_neg / y_val_neg
-                # 新版直接调用 self._evaluate_cascade(stage_model)，
-                # 内部使用 self.X_val / self.y_val（全程固定），标准一致
-                cascade_tpr, cascade_fpr = self._evaluate_cascade(stage_model)
+                # 初次评估输出详细信息
+                cascade_tpr, cascade_fpr = self._evaluate_cascade(stage_model, verbose=True)
 
-                # C3：若验证集累积 TPR 不足，持续降低阈值（以更多假正换取更高召回）
                 adjust_count = 0
+                # 调阈值时将 verbose 设为 False，减少控制台冗余输出
                 while cascade_tpr < target_tpr and stage_model.threshold > -100.0:
                     stage_model.threshold -= 0.05
-                    cascade_tpr, cascade_fpr = self._evaluate_cascade(stage_model)
+                    cascade_tpr, cascade_fpr = self._evaluate_cascade(stage_model, verbose=False)
                     adjust_count += 1
-                    if adjust_count % 20 == 0:
-                        print(f"    [阈值调整 ×{adjust_count}] "
-                              f"threshold={stage_model.threshold:.3f}，"
-                              f"TPR={cascade_tpr*100:.2f}% (目标≥{target_tpr*100:.2f}%)")
 
                 if adjust_count > 0:
-                    print(f"    [阈值调整] 共调整 {adjust_count} 次，"
-                          f"最终 threshold={stage_model.threshold:.3f}")
+                    print(f"    [阈值调整] 调整结束，降低阈值共 {adjust_count} 次，修正后 threshold={stage_model.threshold:.3f}")
+                    # 阈值调整完毕后，在控制台打印一次当前最终结果
+                    self._evaluate_cascade(stage_model, verbose=True)
 
                 print(f"  [C] {n_features} 个特征 → "
                       f"累积 TPR={cascade_tpr*100:.2f}% (目标≥{target_tpr*100:.2f}%)，"
                       f"累积 FPR={cascade_fpr*100:.4f}% (目标≤{target_fpr*100:.4f}%)")
 
-                best_model = stage_model
+                # 记录本次尝试的历史
+                current_try = {
+                    'model': stage_model,
+                    'fpr': cascade_fpr,
+                    'tpr': cascade_tpr,
+                    'n_features': n_features
+                }
+                stage_history.append(current_try)
+                try_idx = len(stage_history) - 1  # 当前是第几次尝试 (0代表第一次)
 
-                # C4：判断 FPR 是否达标
-                if cascade_fpr <= target_fpr:
-                    print(f"  [C] ✓ FPR 达标，本层训练完成。")
+                # ─── 核心判定逻辑 ───
+
+                # 1. 如果当前 FPR 指标已经完美达标（且TPR也达标），则保存并结束本层
+                if cascade_fpr <= target_fpr and cascade_tpr >= target_tpr:
+                    print(f"      [[OK]] 本层指标已达标！FPR={cascade_fpr*100:.4f}%, TPR={cascade_tpr*100:.2f}%")
+                    best_model = stage_model
                     break
 
-                # C5：FPR 未达标，分段加速增加特征数
+                # 2. 如果未达标，根据尝试次数执行特定的中止与回滚逻辑
+                if try_idx == 1:  # 第二次训练 (索引 1)
+                    fpr_1st = stage_history[0]['fpr']
+                    fpr_2nd = current_try['fpr']
+
+                    if fpr_2nd > fpr_1st:
+                        print(f"      [!] 警告：第二次训练的 FPR ({fpr_2nd*100:.4f}%) 比第一次 ({fpr_1st*100:.4f}%) 还要差！")
+                        print(f"      [[OK]] 触发中止：保留第一次训练的特征数（{stage_history[0]['n_features']} 个），直接开启下一层！")
+                        best_model = stage_history[0]['model']
+                        cascade_fpr = stage_history[0]['fpr']
+                        cascade_tpr = stage_history[0]['tpr']
+                        break
+                    elif fpr_2nd == fpr_1st:
+                        print(f"      [提示] 第二次 FPR 与第一次相同 ({fpr_2nd*100:.4f}%)。")
+                    else:
+                        print(f"      [提示] 第二次 FPR 相比第一次有所改善 ({fpr_2nd*100:.4f}% < {fpr_1st*100:.4f}%)。")
+
+                elif try_idx == 2:  # 第三次训练 (索引 2)
+                    fpr_2nd = stage_history[1]['fpr']
+                    fpr_3rd = current_try['fpr']
+
+                    if fpr_3rd >= fpr_2nd:
+                        print(f"      [!] 警告：第三次训练的 FPR ({fpr_3rd*100:.4f}%) 未能得到优化或比前两次更差！")
+                        print(f"      [[OK]] 触发中止：保留第一次训练的特征数（{stage_history[0]['n_features']} 个），直接开启下一层！")
+                        best_model = stage_history[0]['model']
+                        cascade_fpr = stage_history[0]['fpr']
+                        cascade_tpr = stage_history[0]['tpr']
+                        break
+                    else:
+                        print(f"      [提示] 第三次 FPR 取得改善 ({fpr_3rd*100:.4f}%)，继续向下迭代。")
+
+                # 如果已经超过三次尝试，后续的正常降温/防退化保障逻辑
+                elif try_idx > 2:
+                    best_idx = np.argmin([h['fpr'] for h in stage_history])
+                    best_model = stage_history[best_idx]['model']
+                    cascade_fpr = stage_history[best_idx]['fpr']
+                    cascade_tpr = stage_history[best_idx]['tpr']
+
+                # 3. 准备增加特征进行下一次尝试
                 n_next = _next_n_features(n_features, self.max_features_per_stage)
+
                 if n_next >= self.max_features_per_stage:
-                    print(f"  [C] ⚠ 特征数达上限 {self.max_features_per_stage}，"
-                          f"强制结束本层（FPR={cascade_fpr*100:.4f}%）。")
-                    break
+                    print(f"\n  [C] *** 警报：本层特征数已达上限 {self.max_features_per_stage}，"
+                          f"但累积 FPR ({cascade_fpr*100:.4f}%) 仍未达到目标 ({target_fpr*100:.4f}%)！")
+                    print("      这说明当前的稀疏特征池已无法进一步区分剩余的困难负样本。")
+                    print(f"      [[OK]] 级联训练在第 {layer_idx - 1} 层安全收敛，整个训练在此处结束。")
+                    return self.stages
 
-                print(f"  [C] FPR 未达标，特征数 {n_features} → {n_next}（+{n_next-n_features}）")
-                n_features = n_next
+                # ─── 三选一交互确认机制 ───
+                if self.non_interactive:
+                    # 非交互模式：自动选择 [1] 继续增加特征，等价于原始 VJ 行为
+                    action = '1'
+                    print(f"\n[自动决策] 当前层指标未达标（累计 FPR: {cascade_fpr*100:.4f}%，目标: {target_fpr*100:.4f}%）")
+                    print(f"  -> 非交互模式，自动继续：特征数 {n_features} → {n_next}（+{n_next-n_features}）")
+                else:
+                    print(f"\n[交互决策] 当前层指标未达标（当前累计 FPR: {cascade_fpr*100:.4f}%，单层目标 FPR: {target_fpr*100:.4f}%）")
+                    print("请选择下一步操作：")
+                    print(f"  [1] 继续增加特征：增加至 {n_next} 个特征并重新训练本层。")
+                    print("  [2] 回退并进入下一层：不加特征，使用本阶段历史尝试中效果最好（FPR最低）的版本结束本层，并开启下一层。")
+                    print("  [3] 终止训练：保存已取得成果（含本层最优结果），直接结束整个级联。")
 
-            # ── D：本层完成，更新累积状态 ────────────────────
+                    action = ""
+                    while True:
+                        action = input("请输入选项数字 [1/2/3]: ").strip()
+                        if action in ['1', '2', '3']:
+                            break
+                        print("  [!] 输入无效，请输入数字 1, 2 或 3")
+
+                if action == '1':
+                    if not self.non_interactive:
+                        print(f"  [C] 确认继续，特征数 {n_features} → {n_next}（+{n_next-n_features}）")
+                    n_features = n_next
+                    # 继续当前层的 while 循环
+
+                elif action == '2':
+                    print("  [C] 确认回退。选择本层历史最低 FPR 对应的模型作为本层成果，结束本层并准备进入下一层。")
+                    best_idx = np.argmin([h['fpr'] for h in stage_history])
+                    best_model = stage_history[best_idx]['model']
+                    cascade_fpr = stage_history[best_idx]['fpr']
+                    cascade_tpr = stage_history[best_idx]['tpr']
+                    break  # 跳出本层 while 循环，进入外层逻辑（HNM与下一层级）
+
+                elif action == '3':
+                    print("  [C] 确认直接结束整个级联。正在保存当前所有进度...")
+                    best_idx = np.argmin([h['fpr'] for h in stage_history])
+                    best_model = stage_history[best_idx]['model']
+                    self.stages.append(best_model)
+                    overall_fpr = stage_history[best_idx]['fpr']
+                    self.overall_tpr = stage_history[best_idx]['tpr']
+                    self._save_checkpoint(layer_idx, overall_fpr)
+                    print(f"\n[Cascade] 级联训练已安全提前结束，当前共有级联层数: {len(self.stages)}")
+                    return self.stages
+
+            # 本层循环结束，保存确定的最合适模型
             self.stages.append(best_model)
             overall_fpr      = cascade_fpr
             self.overall_tpr = cascade_tpr
 
-            print(f"\n[Cascade] 第 {layer_idx} 层完成！"
-                  f"{len(best_model.weak_classifiers)} 个特征，"
-                  f"阈值={best_model.threshold:.3f}")
-            print(f"[Cascade] 整体 FPR={overall_fpr:.4e}  目标={self.F_target:.2e}")
-            print(f"[Cascade] 整体 TPR={self.overall_tpr*100:.2f}%")
+            print(f"\n[Cascade] 第 {layer_idx} 层组装完成！"
+                  f"包含 {len(best_model.weak_classifiers)} 个特征，"
+                  f"本层最终判定阈值={best_model.threshold:.3f}")
+            print(f"[Cascade] 整体累计 FPR={overall_fpr:.4e}  目标={self.F_target:.2e}")
+            print(f"[Cascade] 整体累计 TPR={self.overall_tpr*100:.2f}%")
 
-            # ── E：是否达到目标 ───────────────────────────────
             if overall_fpr <= self.F_target:
-                print(f"\n[Cascade] ✓ 达到目标 FPR {self.F_target:.2e}，训练结束。")
+                print(f"\n[Cascade] [OK] 整体已完成，FPR {self.F_target:.2e} 目标已达成。")
                 self._save_checkpoint(layer_idx, overall_fpr)
                 break
 
-            # ── F：Hard Negative Mining ───────────────────────
-            # 用当前级联扫描训练大图，收集误检子窗口作为下一层负样本（最多6000个）
-            # _collect_patches_from_dir 内部会重新打乱图像列表，每层扫描起始图不同
-            print(f"\n[Cascade] HNM：为第 {layer_idx+1} 层准备负样本...")
-            self.X_neg = self._mine_hard_negatives(max_count=6000)
+            print(f"\n[Cascade] 开始挖掘第 {layer_idx+1} 层的 Hard Negative 困难样本...")
+            self.X_neg = self._mine_hard_negatives(max_count=2400)
             self.y_neg = np.zeros(len(self.X_neg), dtype=np.int32)
-            print(f"[Cascade] HNM 完成，下一层负样本数: {len(self.X_neg)}")
+            print(f"[Cascade] HNM 挖掘完成，收集到下阶段负样本共 {len(self.X_neg)} 个")
 
             self._save_checkpoint(layer_idx, overall_fpr)
 
-        print(f"\n[Cascade] 训练结束，共 {len(self.stages)} 层。")
+        print(f"\n[Cascade] 级联构建结束，当前共有级联层数: {len(self.stages)}")
         return self.stages
-
-    # ─────────────────────────────────────────────────────────
-    #  级联推理（用于 HNM 判断单个 patch）
-    # ─────────────────────────────────────────────────────────
 
     def _cascade_predict(self, patch_norm: np.ndarray) -> bool:
         """
-        用当前所有已训练层判断归一化后的 24×24 patch 是否被误判为人脸。
-
-        patch_norm 已经是灰度归一化数据，此处只做积分图构建和特征计算。
-        通过所有层 → True（Hard Negative）；被任意层拒绝 → False。
+        利用当前已有层判定单个 patch 是否会被判为人脸。
         """
         var = np.var(patch_norm)
         if var < 1e-4:
@@ -528,31 +489,18 @@ class CascadeTrainer:
                 if wc.polarity * norm_val < wc.polarity * wc.threshold:
                     score += wc.alpha
             if score < stage.threshold:
-                return False   # 被本层拒绝
-        return True            # 通过所有层，是 Hard Negative
+                return False
+        return True
 
-    # ─────────────────────────────────────────────────────────
-    #  Hard Negative Mining
-    # ─────────────────────────────────────────────────────────
-
-    def _mine_hard_negatives(self, max_count: int = 6000) -> np.ndarray:
+    def _mine_hard_negatives(self, max_count: int = 2400) -> np.ndarray:
         """
-        扫描训练负样本大图，收集被当前级联误判为人脸的子窗口（Hard Negative）。
-
-        策略：
-          - 单尺度固定 24×24 滑动窗口，步长 = self.hnm_step（推荐 4）
-          - _collect_patches_from_dir 内部会 shuffle 文件列表，每层扫描起点随机
-          - 大图先整张转灰度再裁（_collect_patches_from_dir 内完成）
-          - 方差 < 1 的 patch 跳过
-          - 收够 max_count 个立即停止，不需要扫完所有图（论文上限 6000）
-
-        返回：形状 (N, D) 的特征矩阵，N ≤ max_count
+        通过滑动窗口扫描负样本图像，收集被错误判定为人脸的子窗口。
         """
         if not self.train_neg_image_dir or not os.path.exists(self.train_neg_image_dir):
-            print("  [HNM] ⚠ 训练负样本目录不存在，降级为特征过滤模式...")
+            print("  [HNM] [WARN] 负样本大图目录不正确，转入降级过滤...")
             return self._fallback_filter_negatives()
 
-        print(f"  [HNM] 扫描训练大图，步长={self.hnm_step}，目标={max_count} 个...")
+        print(f"  [HNM] 扫描中，滑动步长={self.hnm_step}，收集目标上限={max_count}...")
         t0 = time.time()
 
         patches = _collect_patches_from_dir(
@@ -564,24 +512,23 @@ class CascadeTrainer:
             cascade_classifier=self._cascade_predict,
         )
 
-        print(f"  [HNM] 扫描完成，耗时 {time.time()-t0:.1f}s，"
-              f"收集 {len(patches)}/{max_count} 个 Hard Negative。")
+        print(f"  [HNM] 扫描进程耗时 {time.time()-t0:.1f}s，"
+              f"收集困难样本: {len(patches)}/{max_count} 个")
 
         if len(patches) == 0:
-            print("  [HNM] ⚠ 未找到 Hard Negative，降级为特征过滤模式...")
+            print("  [HNM] [WARN] 未找到困难负样本，转入降级过滤模式...")
             return self._fallback_filter_negatives()
 
-        print(f"  [HNM] 批量计算 {len(patches)} 个 patch 的 Haar 特征...")
+        print(f"  [HNM] 批量转换并提取特征（特征规模：{len(self.features_desc)}）...")
         X_hnm = _patches_to_feature_matrix(patches, self.features_desc)
-        print(f"  [HNM] 特征矩阵形状: {X_hnm.shape}")
+        print(f"  [HNM] 提取完成，特征矩阵形状为: {X_hnm.shape}")
         return X_hnm
 
     def _fallback_filter_negatives(self) -> np.ndarray:
         """
-        备用策略：HNM 无法执行时，从现有负样本特征矩阵中过滤出仍能通过级联的困难样本。
-        若过滤后数量 < 200，随机补充原始负样本防止训练崩溃。
+        备用兜底模式：无法直接挖掘新 Hard Negative 时，在上一阶段的负样本数据中继续寻找困难负样本。
         """
-        print("  [Fallback] 对现有负样本特征做级联过滤...")
+        print("  [Fallback] 开始级联过滤存量样本...")
         hard_neg = self.X_neg.copy()
 
         for stage in self.stages:
@@ -589,13 +536,13 @@ class CascadeTrainer:
                 break
             preds    = stage.classify(hard_neg)
             hard_neg = hard_neg[preds == 1]
-            print(f"    过滤后剩余: {len(hard_neg)}")
+            print(f"    过滤后剩余困难负样本数量: {len(hard_neg)}")
 
         if len(hard_neg) < 200:
             n_sup = min(500 - len(hard_neg), len(self.X_neg))
             idx   = np.random.choice(len(self.X_neg), n_sup, replace=False)
             hard_neg = (np.vstack([hard_neg, self.X_neg[idx]])
                         if len(hard_neg) > 0 else self.X_neg[idx])
-            print(f"  [Fallback] 补充 {n_sup} 个随机负样本，最终: {len(hard_neg)}")
+            print(f"  [Fallback] 补充 {n_sup} 个常规负样本，当前负样本大小: {len(hard_neg)}")
 
         return hard_neg

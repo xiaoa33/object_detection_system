@@ -77,7 +77,7 @@ def parse_args():
 
     # ─── 模型参数 ───
     parser.add_argument(
-        "--model", type=str, default="models/yiping6.pkl",
+        "--model", type=str, default="models/cascade_model.pkl",
         help="级联模型文件路径（默认: models/cascade_model.pkl）"
     )
 

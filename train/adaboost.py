@@ -22,6 +22,7 @@ adaboost.py — AdaBoost 弱分类器训练模块
 import numpy as np
 import time
 import pickle
+import multiprocessing  # 🚀 导入多进程模块
 from dataclasses import dataclass, field
 from typing import List, Tuple, Optional
 
@@ -64,14 +65,14 @@ class StrongClassifier:
 
     属性：
         weak_classifiers : list[WeakClassifier] — 所有弱分类器
-        threshold        : float                — 判决阈值，默认 ½·Σα_t，
+        threshold        : float                — 判决阈值，默认 ½·sum_alpha_t，
                                                   可在级联训练时调低以提升检测率
     """
     weak_classifiers: List[WeakClassifier] = field(default_factory=list)
     threshold: float = 0.0  # 初始化后由 _update_threshold() 设置
 
     def _update_threshold(self) -> None:
-        """将阈值重置为 ½·Σα_t（论文默认值）。"""
+        """将阈值重置为 ½·sum_alpha_t（论文默认值）。"""
         self.threshold = 0.5 * sum(wc.alpha for wc in self.weak_classifiers)
 
     def classify(self, feature_values: np.ndarray) -> np.ndarray:
@@ -169,6 +170,31 @@ def _find_best_threshold_for_feature(
 
     return float(best_threshold), int(best_polarity), min_error
 
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 🚀 多进程共享内存设计：利用全局变量与 Linux 写时复制实现无拷贝共享
+# ──────────────────────────────────────────────────────────────────────────────
+
+_global_X = None
+_global_y = None
+
+def _init_mp_pool(X: np.ndarray, y: np.ndarray):
+    """多进程初始化函数：子进程继承父进程的 X 和 y，零复制共享特征数据"""
+    global _global_X, _global_y
+    _global_X = X
+    _global_y = y
+
+def _eval_feature_worker(args: Tuple[int, np.ndarray]) -> Tuple[int, float, int, float]:
+    """并行计算单特征最优阈值的 worker"""
+    f_idx, weights = args
+    # 直接在内存指针上切片提取对应特征列，避免跨进程传输大数据
+    x_col = _global_X[:, f_idx]
+    threshold, polarity, error = _find_best_threshold_for_feature(
+        x_col, _global_y, weights
+    )
+    return f_idx, threshold, polarity, error
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # 核心函数：AdaBoost 训练（论文 Table 1）
 # ──────────────────────────────────────────────────────────────────────────────
@@ -215,121 +241,127 @@ def train_adaboost(
     weights[y == 0] = 1.0 / (2.0 * n_neg)
     print(f"[AdaBoost] 权重初始化完成：正样本各 {1.0/(2*n_pos):.6f}，负样本各 {1.0/(2*n_neg):.6f}")
 
+    # 🚀 初始化进程池：保留2个空闲核心，防止机器卡死，使用 fork 初始化进程池
+    num_cores = max(1, multiprocessing.cpu_count() - 2)
+    print(f"[AdaBoost] 正在初始化并行进程池，核心数: {num_cores} ...")
+    pool = multiprocessing.Pool(
+        processes=num_cores, 
+        initializer=_init_mp_pool, 
+        initargs=(X, y)
+    )
+
     strong_clf = StrongClassifier()
 
-    # 记录已被选中的特征索引（可选：防止重复选同一特征）
-    selected_feature_indices = set()
+    try:
+        # ── 论文 Table 1, For t = 1,...,T ────────────────────────────────────────
+        for t in range(1, n_features_to_select + 1):
+            round_start = time.time()
 
-    # ── 论文 Table 1, For t = 1,...,T ────────────────────────────────────────
-    for t in range(1, n_features_to_select + 1):
-        round_start = time.time()
+            # ── Step 1：归一化权重 ────────────────────────────────────────────────
+            # w_{t,i} ← w_{t,i} / Σ_j w_{t,j}
+            weight_sum = weights.sum()
+            weights /= weight_sum
 
-        # ── Step 1：归一化权重 ────────────────────────────────────────────────
-        # w_{t,i} ← w_{t,i} / Σ_j w_{t,j}
-        weight_sum = weights.sum()
-        weights /= weight_sum
+            # ── Step 2：多进程并行扫描所有特征 ───────────────────
+            # 准备参数元组 (特征索引, 当前轮权重)，传递少量数据 w
+            tasks = [(f_idx, weights) for f_idx in range(n_features)]
+            
+            # 使用进程池计算并收集结果
+            results = pool.map(_eval_feature_worker, tasks, chunksize=100)
 
-        # ── Step 2：遍历所有特征，选加权误差最小的弱分类器 ───────────────────
-        # 论文：ε_t = min_{f,p,θ} Σ_i w_i |h(x_i, f, p, θ) - y_i|
-        best_error    = np.inf
-        best_feat_idx = -1
-        best_threshold = 0.0
-        best_polarity  = 1
+            # 寻找加权误差最小的弱分类器
+            best_error    = np.inf
+            best_feat_idx = -1
+            best_threshold = 0.0
+            best_polarity  = 1
 
-        feature_scan_count = 0  # 调试计数
+            for f_idx, threshold, polarity, error in results:
+                if error < best_error:
+                    best_error     = error
+                    best_feat_idx  = f_idx
+                    best_threshold = threshold
+                    best_polarity  = polarity
 
-        for f_idx in range(n_features):
-            # 论文允许同一特征被多次选中，但实践中通常跳过已选特征
-            # 以避免权重更新后重复选择同一特征导致其他特征无法被探索
-            # （原始论文未明确禁止，但 OpenCV 实现也允许重复；此处保留可重复选择，
-            #  与论文 Table 1 完全对应）
-            threshold, polarity, error = _find_best_threshold_for_feature(
-                X[:, f_idx], y, weights
+            # ── Step 3：定义本轮弱分类器 h_t ─────────────────────────────────────
+            # h_t(x) = h(x, f_t, p_t, θ_t)，其中 f_t, p_t, θ_t 为上面的最优值
+
+            # ── Step 4：计算 α_t 和 β_t ──────────────────────────────────────────
+            # 论文：β_t = ε_t / (1 - ε_t)
+            #       α_t = log(1 / β_t)
+            #
+            # 数值稳定性处理：防止 ε=0（完美分类）或 ε=1 时取对数溢出
+            eps = 1e-10
+            epsilon_t = float(np.clip(best_error, eps, 1.0 - eps))
+            beta_t  = epsilon_t / (1.0 - epsilon_t)
+            alpha_t = np.log(1.0 / beta_t)
+
+            # 记录弱分类器
+            wc = WeakClassifier(
+                feature_idx=best_feat_idx,
+                threshold=best_threshold,
+                polarity=best_polarity,
+                alpha=alpha_t,
+                error=epsilon_t,
             )
-            feature_scan_count += 1
+            strong_clf.weak_classifiers.append(wc)
 
-            if error < best_error:
-                best_error     = error
-                best_feat_idx  = f_idx
-                best_threshold = threshold
-                best_polarity  = polarity
+            # ── Step 5：更新样本权重 ──────────────────────────────────────────────
+            # w_{t+1,i} = w_{t,i} · β_t^{1 - e_i}
+            # 其中 e_i = 0 若样本 x_i 被正确分类，e_i = 1 否则
+            #
+            # 即：分类正确的样本权重乘以 β_t（降权），分类错误的不变。
 
-        # ── Step 3：定义本轮弱分类器 h_t ─────────────────────────────────────
-        # h_t(x) = h(x, f_t, p_t, θ_t)，其中 f_t, p_t, θ_t 为上面的最优值
+            # 计算本轮弱分类器对所有样本的预测
+            f_vals = X[:, best_feat_idx]
+            predictions = (best_polarity * f_vals < best_polarity * best_threshold).astype(np.int32)
 
-        # ── Step 4：计算 α_t 和 β_t ──────────────────────────────────────────
-        # 论文：β_t = ε_t / (1 - ε_t)
-        #       α_t = log(1 / β_t)
-        #
-        # 数值稳定性处理：防止 ε=0（完美分类）或 ε=1 时取对数溢出
-        eps = 1e-10
-        epsilon_t = float(np.clip(best_error, eps, 1.0 - eps))
-        beta_t  = epsilon_t / (1.0 - epsilon_t)
-        alpha_t = np.log(1.0 / beta_t)
+            # e_i：分类正确为 0，分类错误为 1
+            e_i = (predictions != y).astype(np.float64)
 
-        # 记录弱分类器
-        wc = WeakClassifier(
-            feature_idx=best_feat_idx,
-            threshold=best_threshold,
-            polarity=best_polarity,
-            alpha=alpha_t,
-            error=epsilon_t,
-        )
-        strong_clf.weak_classifiers.append(wc)
+            # 权重更新：w_{t+1,i} = w_{t,i} · β_t^{1 - e_i}
+            # 分类正确（e_i=0）→ 乘以 β_t^1 = β_t（降权）
+            # 分类错误（e_i=1）→ 乘以 β_t^0 = 1.0（不变）
+            weights *= np.power(beta_t, 1.0 - e_i)
 
-        # ── Step 5：更新样本权重 ──────────────────────────────────────────────
-        # w_{t+1,i} = w_{t,i} · β_t^{1 - e_i}
-        # 其中 e_i = 0 若样本 x_i 被正确分类，e_i = 1 否则
-        #
-        # 即：分类正确的样本权重乘以 β_t（降权），分类错误的不变。
+            round_elapsed = time.time() - round_start
 
-        # 计算本轮弱分类器对所有样本的预测
-        f_vals = X[:, best_feat_idx]
-        predictions = (best_polarity * f_vals < best_polarity * best_threshold).astype(np.int32)
+            # ── 打印本轮信息 ──────────────────────────────────────────────────────
+            n_correct = int((predictions == y).sum())
+            train_acc = n_correct / n_samples * 100
 
-        # e_i：分类正确为 0，分类错误为 1
-        e_i = (predictions != y).astype(np.float64)
+            if verbose:
+                print(
+                    f"[AdaBoost] 第 {t:3d}/{n_features_to_select} 轮 | "
+                    f"特征索引={best_feat_idx:6d} | "
+                    f"极性={best_polarity:+d} | "
+                    f"阈值={best_threshold:+.4f} | "
+                    f"ε={epsilon_t:.4f} | "
+                    f"α={alpha_t:.4f} | "
+                    f"β={beta_t:.4f} | "
+                    f"训练准确率={train_acc:.2f}% | "
+                    f"耗时={round_elapsed:.2f}s"
+                )
+            elif t % max(1, n_features_to_select // 10) == 0:
+                # 非 verbose 模式下每 10% 打印一次进度
+                print(
+                    f"[AdaBoost] 进度 {t}/{n_features_to_select} "
+                    f"({t/n_features_to_select*100:.0f}%) | "
+                    f"ε={epsilon_t:.4f} | α={alpha_t:.4f}"
+                )
+    finally:
+        # 🚀 无论训练是否异常，必须关闭并回收进程池
+        pool.close()
+        pool.join()
 
-        # 权重更新：w_{t+1,i} = w_{t,i} · β_t^{1 - e_i}
-        # 分类正确（e_i=0）→ 乘以 β_t^1 = β_t（降权）
-        # 分类错误（e_i=1）→ 乘以 β_t^0 = 1.0（不变）
-        weights *= np.power(beta_t, 1.0 - e_i)
-
-        round_elapsed = time.time() - round_start
-
-        # ── 打印本轮信息 ──────────────────────────────────────────────────────
-        n_correct = int((predictions == y).sum())
-        train_acc = n_correct / n_samples * 100
-
-        if verbose:
-            print(
-                f"[AdaBoost] 第 {t:3d}/{n_features_to_select} 轮 | "
-                f"特征索引={best_feat_idx:6d} | "
-                f"极性={best_polarity:+d} | "
-                f"阈值={best_threshold:+.4f} | "
-                f"ε={epsilon_t:.4f} | "
-                f"α={alpha_t:.4f} | "
-                f"β={beta_t:.4f} | "
-                f"训练准确率={train_acc:.2f}% | "
-                f"耗时={round_elapsed:.2f}s"
-            )
-        elif t % max(1, n_features_to_select // 10) == 0:
-            # 非 verbose 模式下每 10% 打印一次进度
-            print(
-                f"[AdaBoost] 进度 {t}/{n_features_to_select} "
-                f"({t/n_features_to_select*100:.0f}%) | "
-                f"ε={epsilon_t:.4f} | α={alpha_t:.4f}"
-            )
-
-    # ── 设置默认阈值：½·Σα_t（论文 Table 1 最终强分类器公式）──────────────
+    # ── 设置默认阈值：½·sum_alpha_t（论文 Table 1 最终强分类器公式）──────────────
     strong_clf._update_threshold()
 
     # 打印强分类器汇总
     total_alpha = sum(wc.alpha for wc in strong_clf.weak_classifiers)
     print(f"\n[AdaBoost] 训练完成！")
     print(f"  弱分类器数量 : {len(strong_clf.weak_classifiers)}")
-    print(f"  Σα_t          : {total_alpha:.4f}")
-    print(f"  默认阈值 ½·Σα : {strong_clf.threshold:.4f}")
+    print(f"  sum_alpha_t          : {total_alpha:.4f}")
+    print(f"  threshold : {strong_clf.threshold:.4f}")
 
     # 在训练集上评估强分类器整体性能
     train_preds = strong_clf.classify(X)
@@ -360,17 +392,6 @@ def adjust_threshold_for_detection_rate(
     """
     在验证集上调整强分类器阈值，以达到目标检测率。
 
-    论文 Section 4（Attentional Cascade）描述：
-        "The initial AdaBoost threshold ½·Σα_t is designed to yield a low
-         error rate on the training data. A lower threshold yields higher
-         detection rates and higher false positive rates."
-
-        "the two-feature classifier can be adjusted to detect 100% of the
-         faces with a false positive rate of 50%."
-
-    级联训练中，每层需保证检测率 d ≥ d_target（约 99%），
-    通过降低阈值来实现（代价是假正率上升，由后续层进一步过滤）。
-
     参数：
         strong_clf            : StrongClassifier — 待调整的强分类器（原地修改）
         X_val                 : ndarray, (n_val, n_features) — 验证集特征
@@ -390,11 +411,9 @@ def adjust_threshold_for_detection_rate(
     # 计算所有验证样本的连续得分
     scores = strong_clf.score(X_val)
 
-    # 对正样本得分升序排列，逐步降低阈值直至检测率达标
-    pos_scores = np.sort(scores[val_pos_mask])
+    pos_scores = np.sort(scores[val_pos_mask])[::-1]  # 降序排列，从高到低尝试
 
     # 从高到低尝试每个正样本得分作为阈值
-    # 当阈值 = 某正样本得分时，该样本恰好被接受，检测率从小到大增大
     for candidate_threshold in pos_scores:
         preds = (scores >= candidate_threshold).astype(np.int32)
         tp = int(((preds == 1) & val_pos_mask).sum())
@@ -411,7 +430,7 @@ def adjust_threshold_for_detection_rate(
             )
             return float(candidate_threshold), dr, fpr
 
-    # 若无法达到目标，将阈值设为最小正样本得分（尽力而为）
+    # 若无法达到目标，将阈值设为最小正样本得分
     min_threshold = float(pos_scores[0]) if len(pos_scores) > 0 else 0.0
     strong_clf.threshold = min_threshold
     preds = (scores >= min_threshold).astype(np.int32)
@@ -435,15 +454,6 @@ def evaluate_strong_classifier(
 ) -> Tuple[float, float]:
     """
     在给定数据集上评估强分类器的检测率和假正率。
-
-    参数：
-        strong_clf   : StrongClassifier
-        X            : ndarray, (n_samples, n_features)
-        y            : ndarray, (n_samples,)
-        dataset_name : str — 用于打印的数据集名称
-
-    返回：
-        (detection_rate, false_positive_rate)，均为 [0, 1] 范围内的浮点数
     """
     n_pos = int((y == 1).sum())
     n_neg = int((y == 0).sum())
@@ -467,7 +477,7 @@ def evaluate_strong_classifier(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 模型序列化工具（供 cascade_trainer.py 调用）
+# 模型序列化工具
 # ──────────────────────────────────────────────────────────────────────────────
 
 def save_strong_classifier(strong_clf: StrongClassifier, path: str) -> None:
@@ -486,18 +496,12 @@ def load_strong_classifier(path: str) -> StrongClassifier:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 单元测试 / 快速验证（直接运行此文件时执行）
+# 单元测试 / 快速验证
 # ──────────────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     """
-    用合成数据对 AdaBoost 实现做快速冒烟测试。
-
-    测试逻辑：
-        - 生成两类线性可分的合成特征（正样本均值=1，负样本均值=-1）
-        - 用 AdaBoost 选 T=5 个弱分类器
-        - 验证训练集检测率 > 90%
-        - 验证阈值调整接口是否正常工作
+    合成数据冒烟测试。
     """
     print("=" * 60)
     print("AdaBoost 单元测试（合成数据）")
@@ -505,14 +509,11 @@ if __name__ == "__main__":
 
     np.random.seed(42)
 
-    # ── 构造合成数据集 ────────────────────────────────────────────────────────
     n_pos_train = 200
     n_neg_train = 400
-    n_features  = 50   # 合成50个特征（实际场景约16万）
+    n_features  = 50
 
-    # 正样本：特征均值偏正
     X_pos = np.random.randn(n_pos_train, n_features) + 1.0
-    # 负样本：特征均值偏负
     X_neg = np.random.randn(n_neg_train, n_features) - 1.0
 
     X_train = np.vstack([X_pos, X_neg])
@@ -521,24 +522,20 @@ if __name__ == "__main__":
         np.zeros(n_neg_train, dtype=np.int32),
     ])
 
-    # 打乱顺序
     shuffle_idx = np.random.permutation(len(y_train))
     X_train = X_train[shuffle_idx]
     y_train = y_train[shuffle_idx]
 
     print(f"\n训练集：{n_pos_train} 正样本 + {n_neg_train} 负样本，{n_features} 维特征\n")
 
-    # ── 训练强分类器（T=5 轮）────────────────────────────────────────────────
     T = 5
     strong_clf = train_adaboost(X_train, y_train, n_features_to_select=T, verbose=True)
 
-    # ── 在训练集上评估 ────────────────────────────────────────────────────────
     print("\n── 在训练集上评估 ──")
     dr, fpr = evaluate_strong_classifier(strong_clf, X_train, y_train, "训练集")
     assert dr > 0.85, f"训练集检测率过低：{dr:.2f}"
     print(f"  ✓ 训练集检测率 {dr*100:.1f}% > 85%，通过")
 
-    # ── 生成验证集 ────────────────────────────────────────────────────────────
     X_val_pos = np.random.randn(100, n_features) + 1.0
     X_val_neg = np.random.randn(200, n_features) - 1.0
     X_val = np.vstack([X_val_pos, X_val_neg])
@@ -550,7 +547,6 @@ if __name__ == "__main__":
     )
     print(f"  调整后阈值={new_thresh:.4f}  验证集检测率={dr_val*100:.1f}%  假正率={fpr_val*100:.1f}%")
 
-    # ── score() 接口测试 ──────────────────────────────────────────────────────
     scores = strong_clf.score(X_val)
     print(f"\n── score() 接口测试 ──")
     print(f"  得分范围：[{scores.min():.4f}, {scores.max():.4f}]")
@@ -560,7 +556,6 @@ if __name__ == "__main__":
         "正样本平均得分应高于负样本！"
     print("  ✓ 正样本得分高于负样本，通过")
 
-    # ── 序列化测试 ────────────────────────────────────────────────────────────
     import tempfile, os
     print(f"\n── 序列化 / 反序列化测试 ──")
     with tempfile.NamedTemporaryFile(suffix=".pkl", delete=False) as tmp:

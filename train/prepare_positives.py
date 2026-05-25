@@ -90,6 +90,7 @@ import random
 import zipfile
 import urllib.request
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 import cv2
@@ -388,7 +389,7 @@ def _filter_records(records: list) -> list:
 # 正样本提取核心函数
 # ============================================================
 
-def _crop_face_patch(record: dict, images_root: Path) -> np.ndarray | None:
+def _crop_face_patch(record: dict, images_root: Path) -> Optional[np.ndarray]:
     """
     根据一条 WIDER FACE 标注，裁剪并处理为 24×24 灰度正样本。
 
