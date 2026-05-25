@@ -59,6 +59,8 @@ def parse_args():
         --max-face       : 最大人脸尺寸（默认: 500）
         --scale-factor   : 图像金字塔缩放因子（默认: 1.25，越大越快但可能漏检）
         --nms-threshold  : NMS IoU 阈值（默认: 0.5，范围 0.0~1.0）
+        --min-votes      : 最少重叠票数/邻近框数（默认: 2，范围 1~10）
+        --step-factor    : 滑动步长比例 Δ（默认: 3.0，范围 0.5~5.0）
 
     返回：
         解析后的参数对象
@@ -102,6 +104,14 @@ def parse_args():
         "--nms-threshold", type=float, default=0.5,
         help="NMS IoU 阈值（默认: 0.5，范围 0.0~1.0）"
     )
+    parser.add_argument(
+        "--min-votes", type=int, default=2,
+        help="最少重叠票数/邻近框数（默认: 2，范围 1~10）"
+    )
+    parser.add_argument(
+        "--step-factor", type=float, default=3.0,
+        help="滑动步长比例 Δ（默认: 3.0，范围 0.5~5.0）"
+    )
 
     return parser.parse_args()
 
@@ -134,8 +144,10 @@ def main():
         detector = Detector(
             model_path=model_path,
             scale_factor=args.scale_factor,
+            step_factor=args.step_factor,
             min_face_size=args.min_face,
-            max_face_size=args.max_face
+            max_face_size=args.max_face,
+            max_image_dim=0,   # video_thread 已做缩放，此处不再重复
         )
     except Exception as e:
         print(f"[main] ❌ 初始化检测器失败: {e}")
@@ -160,8 +172,9 @@ def main():
     print(f"[main] 检测模式: Viola-Jones 真实模式")
     print(f"[main] 模型文件: {model_path}")
     print(f"[main] 摄像头 ID: {args.camera}")
-    print(f"[main] 最小人脸尺寸: {args.min_face}px")
-    print(f"[main] NMS 阈值: {args.nms_threshold}")
+    print(f"[main] 最小人脸尺寸: {args.min_face}px  |  最大人脸尺寸: {args.max_face}px")
+    print(f"[main] NMS 阈值: {args.nms_threshold}  |  最少票数: {args.min_votes}")
+    print(f"[main] 步长比例 Δ: {args.step_factor}  |  缩放因子: {args.scale_factor}")
     print("[main] 按 Ctrl+C 或关闭窗口退出")
     print("=" * 60)
 

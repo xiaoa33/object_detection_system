@@ -279,7 +279,8 @@ class _UnionFind:
 
 def group_rectangles_original(
     rectangles: List[Tuple[int, int, int, int]],
-    group_threshold: int = 3
+    group_threshold: int = 3,
+    eps: float = 0.2
 ) -> List[Tuple[int, int, int, int]]:
     """
     基于 Viola-Jones 2004 论文 Section 5 数学思想重构的均值合并算法。
@@ -287,10 +288,14 @@ def group_rectangles_original(
     ─── 算法流程（三步法）───
 
     第 1 步 · 判定与归组（Partitioning）
-        使用基于【面积重叠】的等价判定标准，替代旧的 ε-邻域坐标差值判定。
-        计算两个框 R1 和 R2 的交集面积占其中"较小者面积"的比例（IoM）：
-            IoM = Intersection Area / min(Area1, Area2)
-        若 IoM > 0.4（表示重叠度较高），则判定两框属于同一组。
+        使用 ε-邻域坐标差值判定，仅当两个框的左上角坐标差和右下角坐标差
+        均在允许容差内时才归为同组：
+            dx = |x1 - x2|          dy = |y1 - y2|
+            dw = |(x1+w1) - (x2+w2)|  dh = |(y1+h1) - (y2+h2)|
+            limit_w = eps * min(w1, w2)
+            limit_h = eps * min(h1, h2)
+        判定条件：dx ≤ limit_w 且 dy ≤ limit_h 且 dw ≤ limit_w 且 dh ≤ limit_h
+        此判定是**非传递**的，避免了链式合并导致整张图坍缩为一个框的问题。
 
     第 2 步 · 投票过滤（Vote Filtering）
         若某组内的候选框数量小于 group_threshold，
@@ -306,6 +311,8 @@ def group_rectangles_original(
         rectangles     : 原始检测框列表 [(x, y, w, h), ...]
         group_threshold: 最小组内框数过滤阈值（默认 3）
                          若某组内框的数量 < group_threshold，则判为噪声整组丢弃。
+        eps            : ε-邻域容差因子（默认 0.2）
+                         值越大，归组条件越宽松；值越小，归组条件越严格。
 
     返回：
         合并后的框列表 [(x, y, w, h), ...]
@@ -320,37 +327,31 @@ def group_rectangles_original(
 
     n = len(rectangles)
 
-    # ─── 步骤 1：计算交集面积（IoM）并归组 ───
-    # 预先计算出每个框的右下角坐标和面积，避免重复计算
+    # ─── 步骤 1：ε-邻域坐标差值判定并归组 ───
+    # 预计算左上角和右下角坐标，以及宽高
     x1s = [r[0] for r in rectangles]
     y1s = [r[1] for r in rectangles]
     x2s = [r[0] + r[2] for r in rectangles]
     y2s = [r[1] + r[3] for r in rectangles]
-    areas = [r[2] * r[3] for r in rectangles]
+    ws   = [r[2] for r in rectangles]
+    hs   = [r[3] for r in rectangles]
 
     uf = _UnionFind(n)
 
     for i in range(n):
         for j in range(i + 1, n):
-            # 计算交集矩形
-            inter_left   = max(x1s[i], x1s[j])
-            inter_top    = max(y1s[i], y1s[j])
-            inter_right  = min(x2s[i], x2s[j])
-            inter_bottom = min(y2s[i], y2s[j])
+            # 计算四个坐标的绝对差值
+            dx = abs(x1s[i] - x1s[j])
+            dy = abs(y1s[i] - y1s[j])
+            dw = abs(x2s[i] - x2s[j])
+            dh = abs(y2s[i] - y2s[j])
 
-            inter_w = max(0, inter_right - inter_left)
-            inter_h = max(0, inter_bottom - inter_top)
-            inter_area = inter_w * inter_h
+            # 容差基于较小框的尺寸
+            limit_w = eps * min(ws[i], ws[j])
+            limit_h = eps * min(hs[i], hs[j])
 
-            if inter_area == 0:
-                continue
-
-            # IoM = 交集面积 / 较小框的面积
-            min_area = min(areas[i], areas[j])
-            iom = inter_area / min_area
-
-            # 若 IoM > 0.4，则判定两框重叠，归为同组
-            if iom > 0.4:
+            # 四个差值全部在容差范围内才归为同组（非传递判定）
+            if dx <= limit_w and dy <= limit_h and dw <= limit_w and dh <= limit_h:
                 uf.union(i, j)
 
     # ─── 步骤 2：收集连通分支（投票统计） ───

@@ -43,7 +43,9 @@ class Detector:
                  step_delta: float = 1.5,
                  step_factor: float = None,
                  min_face_size: int = 40,
-                 max_face_size: int = 500):
+                 max_face_size: int = 500,
+                 max_image_dim: int = 640,
+                 verbose: bool = False):
         """
         初始化检测器。
 
@@ -57,6 +59,8 @@ class Detector:
                              1.5 = 高精度（偏慢），3.0 = 平衡（默认），4.5 = 高速度（偏快）
             min_face_size  : 最小人脸尺寸（像素）
             max_face_size  : 最大人脸尺寸（像素）
+            max_image_dim  : 检测前将图像长边缩放到此尺寸以内以加速检测（0=不缩放）
+            verbose        : 是否打印逐窗口调试日志
         """
         self.scale_factor = scale_factor
         self.step_delta = step_delta
@@ -68,6 +72,8 @@ class Detector:
         self.step_factor = 3.0 if step_factor is None else step_factor
         self.min_face_size = min_face_size
         self.max_face_size = max_face_size
+        self.max_image_dim = max_image_dim
+        self._verbose = verbose
 
         # ═══ 后处理算法模式 ═══
         # 0 = 现代 IoU NMS（nms 函数）
@@ -75,8 +81,13 @@ class Detector:
         self._nms_mode = 0
 
         # ═══ 加载真实 Viola-Jones 级联模型 ═══
-        print(f"[Detector] 加载 Viola-Jones 模型: {model_path}")
-        self._cascade = RealCascade(model_path)
+        # 兼容性：支持 str 路径 或 已实例化的 CascadeClassifier 对象
+        if isinstance(model_path, str):
+            print(f"[Detector] 加载 Viola-Jones 模型: {model_path}")
+            self._cascade = RealCascade(model_path, verbose=verbose)
+        else:
+            self._cascade = model_path
+            print(f"[Detector] 使用已加载的 CascadeClassifier（共 {len(self._cascade.stages)} 层级联）")
         print(f"[Detector] 模型加载成功！共 {len(self._cascade.stages)} 层级联")
 
     @property
@@ -150,7 +161,25 @@ class Detector:
         else:
             gray = img_bgr
 
-        return self._detect_real(gray, iou_threshold, min_votes)
+        # ─── 大图自动降采样 ───
+        # 长边超过 max_image_dim 时等比缩放，大幅减少滑动窗口数量
+        # 检测后将框坐标还原到原始尺寸
+        H_orig, W_orig = gray.shape
+        scale_img = 1.0
+        if self.max_image_dim > 0 and max(H_orig, W_orig) > self.max_image_dim:
+            scale_img = self.max_image_dim / max(H_orig, W_orig)
+            new_w = int(W_orig * scale_img)
+            new_h = int(H_orig * scale_img)
+            gray = cv2.resize(gray, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
+        faces = self._detect_real(gray, iou_threshold, min_votes)
+
+        # 坐标还原到原始图像尺寸
+        if scale_img != 1.0:
+            faces = [(int(x / scale_img), int(y / scale_img),
+                      int(w / scale_img), int(h / scale_img)) for (x, y, w, h) in faces]
+
+        return faces
 
     def _detect_real(self, gray: np.ndarray,
                      iou_threshold: float = 0.3,
@@ -198,10 +227,12 @@ class Detector:
             for r in range(0, H - win_size_px + 1, step):
                 for c in range(0, W - win_size_px + 1, step):
 
-                    # ─── 边界安全检查 ───
-                    max_feat_offset = 24
-                    if (r + int(round(max_feat_offset * scale)) >= H or
-                        c + int(round(max_feat_offset * scale)) >= W):
+                    # 边界安全检查：特征坐标各自 round 后再相加，
+                    # 可能比 win_size_px 多出最多 3 px 的舍入误差，
+                    # 若窗口紧贴图像右/下边缘则会导致积分图越界。
+                    max_feat_r = r + win_size_px + 3
+                    max_feat_c = c + win_size_px + 3
+                    if max_feat_r >= H or max_feat_c >= W:
                         continue
 
                     # 4.1 O(1) 计算子窗口方差（用于光照归一化）

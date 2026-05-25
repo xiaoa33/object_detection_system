@@ -428,6 +428,11 @@ def compute_all_features(
 # 检测时的特征计算（供 cascade_classifier.py 逐层调用）
 # ─────────────────────────────────────────────────────────────
 
+def _rect_sum_fast(ii: np.ndarray, r: int, c: int, h: int, w: int) -> float:
+    """内联版 rect_sum，消除高频调用路径上的函数调用开销"""
+    return float(ii[r + h, c + w] + ii[r, c] - ii[r, c + w] - ii[r + h, c])
+
+
 def compute_feature_at_scale(
     desc: FeatureDesc,
     ii: np.ndarray,
@@ -438,50 +443,9 @@ def compute_feature_at_scale(
     """
     检测阶段：在整张图像的积分图上，计算某个子窗口内单个特征的值。
 
-    ── 论文 Section 5.5 的做法 ──────────────────────────────────
-    论文缩放"检测器"而非图像：整张图像只构建一次积分图；
-    对每个尺度 scale，检测窗口在图像上的实际像素大小是 24×scale，
-    特征描述符的坐标也按同一 scale 放大后再加窗口偏移，
-    就可以在同一张积分图上直接查询，无需重采样图像。
-
-    坐标变换公式：
-        实际行坐标 = win_r + round(desc.r × scale)
-        实际列坐标 = win_c + round(desc.c × scale)
-        实际高度   = max(1, round(desc.h × scale))
-        实际宽度   = max(1, round(desc.w × scale))
-
-    ── 在检测流程中的位置 ────────────────────────────────────────
-    调用链（自顶向下）：
-
-        detector.py
-          └─ 对每个尺度 scale（从 1.0 按 1.25 倍递增）
-               └─ 对每个窗口位置 (win_r, win_c)（步长 = round(scale × delta)）
-                    └─ cascade_classifier.py
-                         └─ 对级联第 i 层的每个弱分类器 t：
-                              val = compute_feature_at_scale(
-                                        desc_t, iimg.ii, scale, win_r, win_c)
-                              若本层强分类器拒绝 → 立即跳出，不再计算后续层
-                         └─ 全部层通过 → 记录为候选检测框
-
-    这是级联结构效率的关键：大多数窗口在第 1 层（仅 2 个特征）就被拒绝，
-    平均每个窗口只需计算约 8 个特征（论文 Section 5.3）。
-
-    参数：
-        desc   : FeatureDesc，特征描述符（坐标为 24×24 基础窗口内的坐标）
-        ii     : 整张检测图像的 padded 积分图（IntegralImage.ii），
-                 shape=(H_img+1, W_img+1)
-                 注意：这是整张大图的积分图，不是裁剪后的小图
-        scale  : float，当前检测尺度（相对 24×24 基础窗口的缩放倍数）
-                 论文使用 1.0、1.25、1.25²、... 逐级递增
-        win_r  : int，当前子窗口左上角在原始图像中的行坐标
-        win_c  : int，当前子窗口左上角在原始图像中的列坐标
-
-    返回：
-        float，该特征在当前窗口/尺度下的值
-
-    注意：
-        不做越界检查（由 detector.py 保证 win_r/win_c 合法），
-        保持函数极简以支持高频调用。
+    此函数是检测热路径（每窗口每弱分类器调用一次），已做内联优化：
+    - rect_sum 逻辑内联为 _rect_sum_fast
+    - 特征计算逻辑直接展开，避免创建临时 FeatureDesc 和额外函数调用
     """
     # 将描述符的 24×24 基础坐标 → 当前尺度下的实际图像坐标
     r_scaled = win_r + int(round(desc.r * scale))
@@ -489,9 +453,39 @@ def compute_feature_at_scale(
     h_scaled = max(1, int(round(desc.h * scale)))
     w_scaled = max(1, int(round(desc.w * scale)))
 
-    # 用缩放后的坐标构造临时描述符，复用 compute_feature 的计算逻辑
-    scaled_desc = FeatureDesc(desc.ftype, r_scaled, c_scaled, h_scaled, w_scaled)
-    return compute_feature(scaled_desc, ii)
+    rs = _rect_sum_fast
+
+    if desc.ftype == FEAT_H2:
+        # 左 vs 右
+        return rs(ii, r_scaled, c_scaled + w_scaled, h_scaled, w_scaled) - \
+               rs(ii, r_scaled, c_scaled, h_scaled, w_scaled)
+
+    elif desc.ftype == FEAT_V2:
+        # 下 vs 上
+        return rs(ii, r_scaled + h_scaled, c_scaled, h_scaled, w_scaled) - \
+               rs(ii, r_scaled, c_scaled, h_scaled, w_scaled)
+
+    elif desc.ftype == FEAT_H3:
+        # 中 − 左 − 右
+        return (rs(ii, r_scaled, c_scaled + w_scaled, h_scaled, w_scaled) -
+                rs(ii, r_scaled, c_scaled, h_scaled, w_scaled) -
+                rs(ii, r_scaled, c_scaled + 2 * w_scaled, h_scaled, w_scaled))
+
+    elif desc.ftype == FEAT_V3:
+        # 中 − 上 − 下
+        return (rs(ii, r_scaled + h_scaled, c_scaled, h_scaled, w_scaled) -
+                rs(ii, r_scaled, c_scaled, h_scaled, w_scaled) -
+                rs(ii, r_scaled + 2 * h_scaled, c_scaled, h_scaled, w_scaled))
+
+    elif desc.ftype == FEAT_D4:
+        # (左上+右下) − (右上+左下)
+        return ((rs(ii, r_scaled, c_scaled, h_scaled, w_scaled) +
+                 rs(ii, r_scaled + h_scaled, c_scaled + w_scaled, h_scaled, w_scaled)) -
+                (rs(ii, r_scaled, c_scaled + w_scaled, h_scaled, w_scaled) +
+                 rs(ii, r_scaled + h_scaled, c_scaled, h_scaled, w_scaled)))
+
+    else:
+        raise ValueError(f"[compute_feature_at_scale] 未知特征类型 ftype={desc.ftype}")
 
 
 def iter_window_positions(img_h: int, img_w: int,
